@@ -1,0 +1,27 @@
+{
+  "name": "EURO - Unit Test Management System",
+  "short_name": "EURO",
+  "description": "EURO - Unit Test 1 & 2 Management System for Rajaram Shinde Institute of Engineering and Technology (RSIET)",
+  "start_url": "/",
+  "id": "/",
+  "display": "standalone",
+  "background_color": "#071426",
+  "theme_color": "#0B1F3A",
+  "orientation": "portrait-primary",
+  "scope": "/",
+  "icons": [
+    {
+      "src": "/rsiet_logo_512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/rsiet_logo_192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["education", "productivity"]
+}

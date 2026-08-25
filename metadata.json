@@ -1,0 +1,10 @@
+{
+  "name": "EURO",
+  "description": "EURO - Academic Performance Management & Continuous Evaluation System with AI Continuous Analytics for RSIET (Rajaram Shinde Institute of Engineering and Technology).",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
