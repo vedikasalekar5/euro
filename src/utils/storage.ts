@@ -279,6 +279,16 @@ export const StorageService = {
     }
   },
 
+  saveSubjectsForTeacher(teacherId: string, subjects: Subject[]): void {
+    try {
+      const all = this.getAllSubjects();
+      const otherTeachers = all.filter((s) => s.teacher_id !== teacherId);
+      this.saveAllSubjects([...otherTeachers, ...subjects]);
+    } catch (e) {
+      console.error('Failed to save subjects for teacher', e);
+    }
+  },
+
   getSubjectsByTeacher(teacherId: string): Subject[] {
     const all = this.getAllSubjects();
     return all.filter((s) => s.teacher_id === teacherId);
@@ -374,6 +384,16 @@ export const StorageService = {
     }
   },
 
+  saveStudentsForTeacher(teacherId: string, students: Student[]): void {
+    try {
+      const all = this.getAllStudents();
+      const otherTeachers = all.filter((s) => s.teacher_id !== teacherId);
+      this.saveAllStudents([...otherTeachers, ...students]);
+    } catch (e) {
+      console.error('Failed to save students for teacher', e);
+    }
+  },
+
   getStudentsByTeacher(teacherId: string): Student[] {
     const all = this.getAllStudents();
     const filtered = all.filter((s) => s.teacher_id === teacherId);
@@ -403,6 +423,16 @@ export const StorageService = {
       localStorage.setItem(STORAGE_KEYS.MARKS, JSON.stringify(marks));
     } catch (e) {
       console.error('Failed to save marks', e);
+    }
+  },
+
+  saveMarksForTeacher(teacherId: string, marks: MarkRecord[]): void {
+    try {
+      const all = this.getAllMarks();
+      const otherTeachers = all.filter((m) => m.teacher_id !== teacherId);
+      this.saveAllMarks([...otherTeachers, ...marks]);
+    } catch (e) {
+      console.error('Failed to save marks for teacher', e);
     }
   },
 

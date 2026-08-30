@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import { Teacher } from '../types';
 import { StorageService } from '../utils/storage';
 import { hashPassword, verifyPassword } from '../utils/crypto';
+import { ApiClient } from '../services/api';
 
 interface AuthContextType {
   currentTeacher: Teacher | null;
@@ -11,8 +12,8 @@ interface AuthContextType {
   login: (teacherId: string, password: string) => Promise<{ success: boolean; message: string; teacher?: Teacher }>;
   loginWithCredentials: (teacherId: string, password?: string) => Promise<{ success: boolean; message: string }>;
   resetPassword: (teacherId: string, name: string, newPassword: string) => Promise<{ success: boolean; message: string }>;
-  updateTeacherName: (newName: string) => { success: boolean; message: string };
-  updateTeacherProfile: (profileData: Partial<Teacher>) => { success: boolean; message: string; teacher?: Teacher };
+  updateTeacherName: (newName: string) => Promise<{ success: boolean; message: string }>;
+  updateTeacherProfile: (profileData: Partial<Teacher>) => Promise<{ success: boolean; message: string; teacher?: Teacher }>;
   changePassword: (currentPass: string, newPass: string) => Promise<{ success: boolean; message: string }>;
   logout: () => void;
   isTeacher: boolean;
@@ -51,6 +52,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return { success: false, message: 'Password must be at least 4 characters.' };
       }
 
+      // Try server API first
+      try {
+        const res = await ApiClient.registerTeacher({
+          name: cleanName,
+          password,
+          department: 'Computer Engineering',
+        });
+        if (res.success && res.teacher) {
+          const formattedTeacher: Teacher = {
+            id: res.teacher.id,
+            teacher_id: res.teacher.teacher_id,
+            name: res.teacher.name || (res.teacher as any).full_name || cleanName,
+            department: res.teacher.department || 'Computer Engineering',
+            position: res.teacher.position || 'Faculty',
+            password_hash: '',
+            created_at: res.teacher.created_at || new Date().toISOString(),
+          };
+          // Save to local cache
+          const existing = StorageService.getTeachers();
+          StorageService.saveTeachers([formattedTeacher, ...existing]);
+          return {
+            success: true,
+            message: res.message || 'Registration successful!',
+            teacherId: formattedTeacher.teacher_id,
+            teacher: formattedTeacher,
+          };
+        }
+      } catch (apiErr) {
+        console.warn('API register error, using fallback:', apiErr);
+      }
+
+      // Fallback local registration
       const nextTeacherId = StorageService.generateNextTeacherId();
       const passHash = await hashPassword(password);
 
@@ -88,10 +121,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return { success: false, message: 'Please enter your password.' };
       }
 
+      // Try server API first
+      try {
+        const res = await ApiClient.login(cleanId, password);
+        if (res.success && res.teacher) {
+          const formattedTeacher: Teacher = {
+            id: res.teacher.id,
+            teacher_id: res.teacher.teacher_id,
+            name: res.teacher.name || (res.teacher as any).full_name || 'Faculty Member',
+            department: res.teacher.department || 'Computer Engineering',
+            position: res.teacher.position || 'Faculty',
+            course_code: (res.teacher as any).course_code,
+            subject: (res.teacher as any).subject,
+            email: res.teacher.email,
+            phone: res.teacher.phone,
+            password_hash: '',
+            created_at: res.teacher.created_at || new Date().toISOString(),
+          };
+          setCurrentTeacher(formattedTeacher);
+          return { success: true, message: 'Login successful!', teacher: formattedTeacher };
+        }
+      } catch (apiErr: any) {
+        console.warn('API login attempt:', apiErr.message);
+      }
+
+      // Fallback local check
       const teachers = StorageService.getTeachers();
-      const found = teachers.find(
-        (t) => t.teacher_id.toUpperCase() === cleanId
-      );
+      const found = teachers.find((t) => t.teacher_id.toUpperCase() === cleanId);
 
       if (!found) {
         return {
@@ -101,8 +157,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       const isMatch = await verifyPassword(password, found.password_hash);
-      // Fallback for default seed teacher password
-      const isSeedMatch = found.teacher_id === 'TCH001' && (password === 'teacher123' || password === 'admin');
+      const isSeedMatch =
+        (found.teacher_id === 'TCH001' || found.teacher_id === 'TCH002') &&
+        (password === 'teacher123' || password === 'admin');
 
       if (!isMatch && !isSeedMatch) {
         return { success: false, message: 'Incorrect password. Please try again or use Forgot Password.' };
@@ -131,6 +188,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return { success: false, message: 'New password must be at least 4 characters long.' };
       }
 
+      // Call server API
+      try {
+        const res = await ApiClient.resetPassword(cleanId, cleanName, newPassword);
+        if (res.success) {
+          return { success: true, message: res.message || 'Password reset successfully!' };
+        }
+      } catch (apiErr) {
+        console.warn('API reset password error:', apiErr);
+      }
+
+      // Fallback local reset
       const teachers = StorageService.getTeachers();
       const found = teachers.find((t) => t.teacher_id.toUpperCase() === cleanId);
 
@@ -138,7 +206,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return { success: false, message: `Teacher ID "${teacherId}" does not exist in the system.` };
       }
 
-      // Check name match
       if (!found.name.toLowerCase().includes(cleanName) && !cleanName.includes(found.name.toLowerCase())) {
         return {
           success: false,
@@ -160,16 +227,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const updateTeacherName = (newName: string) => {
+  const updateTeacherName = async (newName: string) => {
     try {
       if (!currentTeacher) return { success: false, message: 'Not logged in.' };
       const clean = newName.trim();
       if (!clean) return { success: false, message: 'Name cannot be empty.' };
 
+      try {
+        await ApiClient.updateTeacher(currentTeacher.id, { name: clean, full_name: clean } as any);
+      } catch (err) {
+        console.warn('Server update teacher name failed:', err);
+      }
+
       const teachers = StorageService.getTeachers();
       const updatedTeacher = { ...currentTeacher, name: clean };
       const updatedList = teachers.map((t) => (t.id === currentTeacher.id ? updatedTeacher : t));
-      
+
       StorageService.saveTeachers(updatedList);
       setCurrentTeacher(updatedTeacher);
 
@@ -179,11 +252,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const updateTeacherProfile = (profileData: Partial<Teacher>) => {
+  const updateTeacherProfile = async (profileData: Partial<Teacher>) => {
     try {
       if (!currentTeacher) return { success: false, message: 'Not logged in.' };
-      
-      // Protect unique teacher_id and id from unauthorized modification
+
       const safeData = { ...profileData };
       delete safeData.teacher_id;
       delete safeData.teacherId;
@@ -192,6 +264,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       const cleanName = safeData.name ? safeData.name.trim() : currentTeacher.name;
       if (!cleanName) return { success: false, message: 'Full Name cannot be empty.' };
+
+      try {
+        await ApiClient.updateTeacher(currentTeacher.id, {
+          ...safeData,
+          full_name: cleanName,
+        } as any);
+      } catch (err) {
+        console.warn('Server update profile error:', err);
+      }
 
       const teachers = StorageService.getTeachers();
       const updatedTeacher: Teacher = {
@@ -217,8 +298,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return { success: false, message: 'New password must be at least 4 characters.' };
       }
 
+      try {
+        const res = await ApiClient.changePassword(currentTeacher.teacher_id, currentPass, newPass);
+        if (res.success) {
+          return { success: true, message: 'Password updated successfully!' };
+        }
+      } catch (err) {
+        console.warn('Server change password attempt:', err);
+      }
+
       const isCurrentValid = await verifyPassword(currentPass, currentTeacher.password_hash);
-      const isSeedValid = currentTeacher.teacher_id === 'TCH001' && (currentPass === 'teacher123' || currentPass === 'admin');
+      const isSeedValid =
+        (currentTeacher.teacher_id === 'TCH001' || currentTeacher.teacher_id === 'TCH002') &&
+        (currentPass === 'teacher123' || currentPass === 'admin');
 
       if (!isCurrentValid && !isSeedValid) {
         return { success: false, message: 'Current password does not match.' };
@@ -273,3 +365,4 @@ export const useAuth = () => {
   }
   return context;
 };
+

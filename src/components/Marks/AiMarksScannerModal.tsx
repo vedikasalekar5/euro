@@ -198,7 +198,23 @@ export const AiMarksScannerModal: React.FC<AiMarksScannerModalProps> = ({
           }),
         });
 
-        const json = await res.json();
+        let json: any = null;
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          try {
+            json = await res.json();
+          } catch (jsonErr) {
+            console.warn('Failed to parse marks scanner response:', jsonErr);
+          }
+        }
+
+        if (!json) {
+          json = {
+            success: false,
+            extractedMarks: [],
+            message: 'Unable to parse marks from this document. Please ensure the document is clear and readable.',
+          };
+        }
         if (json.success && Array.isArray(json.extractedMarks) && json.extractedMarks.length > 0) {
           // Process and match extracted rows against roster & existing marks
           const parsedRows: ExtractedMarkRow[] = json.extractedMarks.map((raw: any, idx: number) => {

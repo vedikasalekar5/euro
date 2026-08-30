@@ -7,8 +7,6 @@ const pdfParse: any = (pdfParseModule as any).default || pdfParseModule;
 export interface ExtractedStudentResult {
   student_name: string;
   enrollment_number: string;
-  department: string;
-  year: string;
   uncertain_fields: string[];
   uncertainty_reason: string;
 }
@@ -27,16 +25,16 @@ export function normalizeDepartment(deptStr: string, fallbackDept?: string): Dep
   const clean = (deptStr || '').trim();
   if (!clean) return (fallbackDept as Department) || '';
 
-  if (/computer|comp|cse|it|information\s*tech/i.test(clean)) {
+  if (/computer|comp|cse|it|information\s*tech|cs\b/i.test(clean)) {
     return 'Computer Engineering';
   }
-  if (/civil|ce/i.test(clean)) {
+  if (/civil|ce\b/i.test(clean)) {
     return 'Civil Engineering';
   }
-  if (/mech|me|mechanical/i.test(clean)) {
+  if (/mech|mechanical|me\b/i.test(clean)) {
     return 'Mechanical Engineering';
   }
-  if (/elect|ee|electrical|ece|entc/i.test(clean)) {
+  if (/elect|ee\b|electrical|ece|entc|electronics/i.test(clean)) {
     return 'Electrical Engineering';
   }
 
@@ -55,13 +53,13 @@ export function normalizeAcademicYear(yearStr: string, fallbackYear?: string): A
   if (/dsy|direct\s*second|lateral/i.test(clean)) {
     return '2nd Year DSY';
   }
-  if (/1st|first|fe|fy/i.test(clean)) {
+  if (/1st|first|fe\b|fy\b|sem\s*[12]\b/i.test(clean)) {
     return '1st Year';
   }
-  if (/3rd|third|te|ty/i.test(clean)) {
+  if (/3rd|third|te\b|ty\b|sem\s*[56]\b/i.test(clean)) {
     return '3rd Year';
   }
-  if (/2nd|second|se|sy/i.test(clean)) {
+  if (/2nd|second|se\b|sy\b|sem\s*[34]\b/i.test(clean)) {
     return '2nd Year';
   }
 
@@ -95,11 +93,30 @@ export function checkEnrollmentAmbiguity(enrollment: string): { isUncertain: boo
   return { isUncertain: false, reason: '' };
 }
 
+// Split line into cells based on common table delimiters or multi-space columns
+function splitIntoCells(line: string): string[] {
+  if (line.includes('|')) {
+    return line.split('|').map((s) => s.trim()).filter((s, idx, arr) => (idx === 0 || idx === arr.length - 1 ? s.length > 0 : true));
+  }
+  if (line.includes('\t')) {
+    return line.split('\t').map((s) => s.trim());
+  }
+  if (line.includes(';') && line.split(';').length >= 3) {
+    return line.split(';').map((s) => s.trim());
+  }
+  if (line.includes(',') && line.split(',').length >= 3 && !line.includes('Engineering,')) {
+    return line.split(',').map((s) => s.trim());
+  }
+  if (/\s{2,}/.test(line)) {
+    return line.split(/\s{2,}/).map((s) => s.trim());
+  }
+  return [line.trim()];
+}
+
 // Extract students deterministically from raw text (PDF text layer or Tesseract OCR output)
+// Extracts ONLY student_name and enrollment_number
 export function parseStudentsFromRawText(
-  rawText: string,
-  defaultDept?: string,
-  defaultYear?: string
+  rawText: string
 ): ExtractedStudentResult[] {
   if (!rawText || typeof rawText !== 'string') return [];
 
@@ -108,59 +125,32 @@ export function parseStudentsFromRawText(
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
 
-  // Global document header hints
-  let documentLevelDept = '';
-  let documentLevelYear = '';
-
-  for (const line of rawLines.slice(0, 25)) {
-    const detectedDept = normalizeDepartment(line);
-    if (detectedDept && !documentLevelDept) {
-      documentLevelDept = detectedDept;
-    }
-    const detectedYear = normalizeAcademicYear(line);
-    if (detectedYear && !documentLevelYear) {
-      documentLevelYear = detectedYear;
-    }
-  }
-
   const results: ExtractedStudentResult[] = [];
   const seenEnrollments = new Set<string>();
 
-  // Filter out pure header lines
+  // Filter out pure noise/footer/header lines
   const isHeaderLine = (line: string): boolean => {
     const lower = line.toLowerCase();
     if (
       lower.includes('college of engineering') ||
       lower.includes('institute of engineering') ||
       lower.includes('mandar education') ||
-      lower.includes('academic year') && !lower.match(/\b(2\d{6,14}|[a-z0-9]{8,16})\b/i) ||
       lower.includes('semester examination') ||
-      lower.includes('student roster') ||
-      lower.includes('attendance sheet') ||
-      lower.includes('roll no') && lower.includes('student name') ||
-      lower.includes('enrollment no') && lower.includes('student name') ||
-      lower.includes('sr. no') && lower.includes('name') ||
-      lower.includes('signature') && lower.includes('marks') ||
+      (lower.includes('unit test') && lower.includes('management')) ||
       lower.includes('head of department') ||
       lower.includes('principal / academic dean') ||
-      lower.includes('course teacher signature')
+      lower.includes('course teacher signature') ||
+      lower.includes('signature of student')
     ) {
       return true;
     }
     return false;
   };
 
-  // Strip BT/Batch markers so they are not mistaken for enrollment or names
-  const stripBtBatch = (text: string): string => {
-    return text
-      .replace(/\b(bt|bt\s*no|bt\s*number|batch|batch\s*no|batch\s*number)\s*[:\-\.]?\s*([0-9a-zA-Z]+)?\b/gi, '')
-      .trim();
-  };
-
   const isPossibleEnrollment = (str: string): boolean => {
-    const clean = str.trim().toUpperCase();
+    const clean = str.replace(/[^A-Za-z0-9]/g, '').trim().toUpperCase();
     if (!clean) return false;
-    // 6 to 18 characters, digits or alphanumeric code (e.g. 24110980101, EN2026001, 2104052, DSY202601)
+    // 6 to 18 characters, digits or alphanumeric code (e.g. 24110980114, 24110980115, EN2026001, PRN202401)
     if (/^\d{6,18}$/.test(clean)) return true;
     if (/^[A-Z]{1,5}\d{4,14}[A-Z0-9]?$/i.test(clean)) return true;
     if (/^[A-Z0-9]{7,18}$/i.test(clean) && /\d/.test(clean)) return true;
@@ -168,143 +158,170 @@ export function parseStudentsFromRawText(
   };
 
   const isPossibleName = (str: string): boolean => {
-    const clean = str.replace(/^(Mr\.|Ms\.|Miss|Master|Mrs\.)\s+/i, '').trim();
-    // Must contain letters, length >= 3, not pure numbers, not header words
+    const clean = str.replace(/^(Mr\.|Ms\.|Miss|Master|Mrs\.)\s+/i, '').replace(/^\d+[\.\-\)]\s*/, '').trim();
     if (!/^[A-Za-z\s\.\'\-]+$/.test(clean) || clean.length < 3) return false;
     const lower = clean.toLowerCase();
     if (
       lower === 'sr no' ||
+      lower === 'sr' ||
+      lower === 'sn' ||
       lower === 'roll no' ||
       lower === 'enrollment no' ||
+      lower === 'enrollment number' ||
       lower === 'student name' ||
       lower === 'programme' ||
       lower === 'department' ||
       lower === 'academic year' ||
-      lower === 'signature'
+      lower === 'signature' ||
+      lower === 'division' ||
+      lower === 'status' ||
+      lower === 'prn' ||
+      lower === 'prn no'
     ) {
       return false;
     }
     return true;
   };
 
-  for (let i = 0; i < rawLines.length; i++) {
-    let line = rawLines[i];
-    if (isHeaderLine(line)) continue;
-    line = stripBtBatch(line);
+  const sanitizeName = (raw: string): string => {
+    return raw
+      .replace(/^(Mr\.|Ms\.|Miss|Master|Mrs\.)\s+/i, '')
+      .replace(/^\d+[\.\-\)]\s*/, '')
+      .replace(/[\t\r\n]+/g, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .replace(/[\|\:\;\,]+$/, '')
+      .trim();
+  };
 
-    // Pattern 1: Delimited row (pipes, tabs, semicolons, commas, or 2+ consecutive spaces)
-    let segments: string[] = [];
-    if (line.includes('|')) {
-      segments = line.split('|').map((s) => s.trim());
-    } else if (line.includes('\t')) {
-      segments = line.split('\t').map((s) => s.trim());
-    } else if (line.includes(';') && line.split(';').length >= 2) {
-      segments = line.split(';').map((s) => s.trim());
-    } else if (line.includes(',') && line.split(',').length >= 2 && !line.includes('Engineering,')) {
-      segments = line.split(',').map((s) => s.trim());
-    } else if (/\s{2,}/.test(line)) {
-      segments = line.split(/\s{2,}/).map((s) => s.trim());
+  // --- PASS 1: Detect Structured Table Header and Column Index Mapping ---
+  let headerRowIndex = -1;
+  let colIndexName = -1;
+  let colIndexEnrollment = -1;
+
+  for (let i = 0; i < Math.min(rawLines.length, 30); i++) {
+    const cells = splitIntoCells(rawLines[i]).map((c) => c.toLowerCase());
+    if (cells.length >= 2) {
+      let foundName = -1;
+      let foundEnrollment = -1;
+
+      cells.forEach((cell, idx) => {
+        // Name variations: Name, Student Name, Full Name, Student, Name of Student, Candidate Name
+        if (
+          /^(student\s*name|name\s*of\s*student|candidate\s*name|full\s*name|student|name)$/i.test(cell) ||
+          (cell.includes('name') && !cell.includes('college') && !cell.includes('course') && !cell.includes('dept'))
+        ) {
+          foundName = idx;
+        }
+        // Enrollment variations: Enrollment No, Enrollment Number, Enrollment, PRN, PRN No, PRN Number, Reg No, Registration No
+        else if (/^(enrollment\s*no\.?|enrollment\s*number|enrollment|prn\s*no\.?|prn\s*number|prn|reg\s*no\.?|registration\s*no\.?)$/i.test(cell)) {
+          foundEnrollment = idx;
+        }
+      });
+
+      if (foundName !== -1 && foundEnrollment !== -1) {
+        headerRowIndex = i;
+        colIndexName = foundName;
+        colIndexEnrollment = foundEnrollment;
+        break;
+      }
     }
+  }
 
-    if (segments.length >= 2) {
-      let foundEnrollment = '';
-      let foundName = '';
-      let foundDept = '';
-      let foundYear = '';
+  // If table header was detected, parse subsequent table rows
+  if (headerRowIndex !== -1 && colIndexName !== -1 && colIndexEnrollment !== -1) {
+    for (let i = headerRowIndex + 1; i < rawLines.length; i++) {
+      const line = rawLines[i];
+      if (isHeaderLine(line)) continue;
+      const cells = splitIntoCells(line);
+      if (cells.length < 2) continue;
 
-      for (const segment of segments) {
-        const cleanSeg = segment.replace(/^Sr\.?\s*No\.?\s*[:\-\.]?\s*\d+/i, '').trim();
-        if (!cleanSeg) continue;
+      let nameVal = colIndexName < cells.length ? cells[colIndexName] : '';
+      let enrollVal = colIndexEnrollment < cells.length ? cells[colIndexEnrollment] : '';
 
-        // Skip pure serial numbers (e.g. "1", "2", "01")
-        if (/^\d{1,3}$/.test(cleanSeg)) continue;
+      nameVal = sanitizeName(nameVal);
+      enrollVal = enrollVal.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
 
-        // Check if segment is department / programme
-        const possibleDept = normalizeDepartment(cleanSeg);
-        if (possibleDept && !foundDept) {
-          foundDept = possibleDept;
-          continue;
-        }
-
-        // Check if segment is year
-        const possibleYear = normalizeAcademicYear(cleanSeg);
-        if (possibleYear && !foundYear) {
-          foundYear = possibleYear;
-          continue;
-        }
-
-        // Check if segment is enrollment number
-        if (!foundEnrollment && isPossibleEnrollment(cleanSeg)) {
-          const m = cleanSeg.match(/\b([A-Z0-9]{6,18})\b/i);
-          if (m) foundEnrollment = m[1].toUpperCase();
-          continue;
-        }
-
-        // Check if segment is student name
-        if (!foundName && isPossibleName(cleanSeg)) {
-          const sanitizedName = cleanSeg.replace(/^(Mr\.|Ms\.|Miss|Master|Mrs\.)\s+/i, '').trim();
-          if (sanitizedName.length >= 2) {
-            foundName = sanitizedName;
+      // If enrollment column didn't have valid format, check other cells
+      if (!isPossibleEnrollment(enrollVal)) {
+        for (const c of cells) {
+          const m = c.match(/\b(2\d{6,14}|[A-Z]{1,5}\d{4,14}[A-Z0-9]?|[A-Z0-9]{7,18})\b/i);
+          if (m && isPossibleEnrollment(m[1])) {
+            enrollVal = m[1].toUpperCase();
+            break;
           }
-          continue;
         }
       }
 
-      if (foundName && foundEnrollment) {
-        if (!seenEnrollments.has(foundEnrollment)) {
-          seenEnrollments.add(foundEnrollment);
-          const ambiguity = checkEnrollmentAmbiguity(foundEnrollment);
+      // If name was not in the expected column, search other cells
+      if (!isPossibleName(nameVal)) {
+        for (let cIdx = 0; cIdx < cells.length; cIdx++) {
+          if (cIdx === colIndexEnrollment) continue;
+          const candidate = sanitizeName(cells[cIdx]);
+          if (isPossibleName(candidate) && !candidate.includes(enrollVal)) {
+            nameVal = candidate;
+            break;
+          }
+        }
+      }
+
+      if (nameVal && isPossibleEnrollment(enrollVal)) {
+        if (!seenEnrollments.has(enrollVal)) {
+          seenEnrollments.add(enrollVal);
+          const ambiguity = checkEnrollmentAmbiguity(enrollVal);
           results.push({
-            student_name: foundName,
-            enrollment_number: foundEnrollment,
-            department: foundDept || documentLevelDept || (defaultDept || 'Computer Engineering'),
-            year: foundYear || documentLevelYear || (defaultYear || '2nd Year'),
+            student_name: nameVal,
+            enrollment_number: enrollVal,
             uncertain_fields: ambiguity.isUncertain ? ['enrollment_number'] : [],
             uncertainty_reason: ambiguity.reason,
           });
-          continue;
         }
       }
     }
+  }
 
-    // Pattern 2: Regex extraction from single line (e.g., "1  24110980111  Vedika Satish Salekar" or "Vedika Satish Salekar 24110980111")
-    const enrollmentMatch = line.match(/\b(2\d{6,14}|[A-Z]{1,4}\d{4,12}|[A-Z0-9]{7,18})\b/i);
-    if (enrollmentMatch) {
-      const enrollmentNo = enrollmentMatch[1].toUpperCase();
-      if (isPossibleEnrollment(enrollmentNo)) {
-        let rest = line.replace(enrollmentMatch[0], '').replace(/^\s*\d+[\.\-\)]\s*/, '').trim();
+  // --- PASS 2: If table header was not detected or yielded no results, run fallback pattern matchers ---
+  if (results.length === 0) {
+    for (let i = 0; i < rawLines.length; i++) {
+      let line = rawLines[i];
+      if (isHeaderLine(line)) continue;
 
-        let lineDept = '';
-        let lineYear = '';
+      // Pattern 1: Delimited row (pipes, tabs, semicolons, commas, or 2+ consecutive spaces)
+      const segments = splitIntoCells(line);
 
-        const deptMatch = rest.match(/(Computer|Civil|Mechanical|Electrical)(\s+Engineering)?/i);
-        if (deptMatch) {
-          lineDept = normalizeDepartment(deptMatch[0]);
-          rest = rest.replace(deptMatch[0], '').trim();
+      if (segments.length >= 2) {
+        let foundEnrollment = '';
+        let foundName = '';
+
+        for (const segment of segments) {
+          const cleanSeg = segment.replace(/^Sr\.?\s*No\.?\s*[:\-\.]?\s*\d+/i, '').trim();
+          if (!cleanSeg) continue;
+
+          // Check if segment is enrollment number
+          if (!foundEnrollment && isPossibleEnrollment(cleanSeg)) {
+            const m = cleanSeg.match(/\b([A-Z0-9]{6,18})\b/i);
+            if (m && isPossibleEnrollment(m[1])) {
+              foundEnrollment = m[1].toUpperCase();
+              continue;
+            }
+          }
+
+          // Check if segment is student name
+          if (!foundName && isPossibleName(cleanSeg)) {
+            const sanitizedName = sanitizeName(cleanSeg);
+            if (sanitizedName.length >= 3) {
+              foundName = sanitizedName;
+            }
+            continue;
+          }
         }
 
-        const yearMatch = rest.match(/(1st|2nd|3rd|4th|FE|SE|TE|BE|DSY)(\s+Year)?/i);
-        if (yearMatch) {
-          lineYear = normalizeAcademicYear(yearMatch[0]);
-          rest = rest.replace(yearMatch[0], '').trim();
-        }
-
-        const nameMatch = rest.match(/([A-Za-z\s\.\'\-]{3,60})/);
-        if (nameMatch && isPossibleName(nameMatch[1])) {
-          const cleanName = nameMatch[1]
-            .replace(/^(Mr\.|Ms\.|Miss|Master|Mrs\.)\s+/i, '')
-            .replace(/[\t\r\n]+/g, ' ')
-            .replace(/\s{2,}/g, ' ')
-            .trim();
-
-          if (cleanName.length >= 3 && !seenEnrollments.has(enrollmentNo)) {
-            seenEnrollments.add(enrollmentNo);
-            const ambiguity = checkEnrollmentAmbiguity(enrollmentNo);
+        if (foundName && foundEnrollment) {
+          if (!seenEnrollments.has(foundEnrollment)) {
+            seenEnrollments.add(foundEnrollment);
+            const ambiguity = checkEnrollmentAmbiguity(foundEnrollment);
             results.push({
-              student_name: cleanName,
-              enrollment_number: enrollmentNo,
-              department: lineDept || documentLevelDept || (defaultDept || 'Computer Engineering'),
-              year: lineYear || documentLevelYear || (defaultYear || '2nd Year'),
+              student_name: foundName,
+              enrollment_number: foundEnrollment,
               uncertain_fields: ambiguity.isUncertain ? ['enrollment_number'] : [],
               uncertainty_reason: ambiguity.reason,
             });
@@ -312,44 +329,64 @@ export function parseStudentsFromRawText(
           }
         }
       }
-    }
 
-    // Pattern 3: Multi-line OCR detection (Line i is Name, Line i+1 is Enrollment or vice versa)
-    if (i < rawLines.length - 1) {
-      const nextLine = stripBtBatch(rawLines[i + 1]);
-      if (isPossibleName(line) && isPossibleEnrollment(nextLine)) {
-        const cleanName = line.replace(/^(Mr\.|Ms\.|Miss|Master|Mrs\.)\s+/i, '').trim();
-        const enrollmentNo = nextLine.toUpperCase();
-        if (cleanName.length >= 3 && !seenEnrollments.has(enrollmentNo)) {
-          seenEnrollments.add(enrollmentNo);
-          const ambiguity = checkEnrollmentAmbiguity(enrollmentNo);
-          results.push({
-            student_name: cleanName,
-            enrollment_number: enrollmentNo,
-            department: documentLevelDept || (defaultDept || 'Computer Engineering'),
-            year: documentLevelYear || (defaultYear || '2nd Year'),
-            uncertain_fields: ambiguity.isUncertain ? ['enrollment_number'] : [],
-            uncertainty_reason: ambiguity.reason,
-          });
-          i++; // Skip next line
-          continue;
+      // Pattern 2: Regex extraction from single line (e.g. "Vedika Salekar 24110980114" or "24110980114 Vedika Salekar")
+      const enrollmentMatch = line.match(/\b(2\d{6,14}|[A-Z]{1,4}\d{4,12}|[A-Z0-9]{7,18})\b/i);
+      if (enrollmentMatch) {
+        const enrollmentNo = enrollmentMatch[1].toUpperCase();
+        if (isPossibleEnrollment(enrollmentNo)) {
+          const rest = line.replace(enrollmentMatch[0], '').replace(/^\s*\d+[\.\-\)]\s*/, '').trim();
+          const cleanName = sanitizeName(rest);
+
+          if (cleanName.length >= 3 && isPossibleName(cleanName) && !seenEnrollments.has(enrollmentNo)) {
+            seenEnrollments.add(enrollmentNo);
+            const ambiguity = checkEnrollmentAmbiguity(enrollmentNo);
+            results.push({
+              student_name: cleanName,
+              enrollment_number: enrollmentNo,
+              uncertain_fields: ambiguity.isUncertain ? ['enrollment_number'] : [],
+              uncertainty_reason: ambiguity.reason,
+            });
+            continue;
+          }
         }
-      } else if (isPossibleEnrollment(line) && isPossibleName(nextLine)) {
-        const enrollmentNo = line.toUpperCase();
-        const cleanName = nextLine.replace(/^(Mr\.|Ms\.|Miss|Master|Mrs\.)\s+/i, '').trim();
-        if (cleanName.length >= 3 && !seenEnrollments.has(enrollmentNo)) {
-          seenEnrollments.add(enrollmentNo);
-          const ambiguity = checkEnrollmentAmbiguity(enrollmentNo);
-          results.push({
-            student_name: cleanName,
-            enrollment_number: enrollmentNo,
-            department: documentLevelDept || (defaultDept || 'Computer Engineering'),
-            year: documentLevelYear || (defaultYear || '2nd Year'),
-            uncertain_fields: ambiguity.isUncertain ? ['enrollment_number'] : [],
-            uncertainty_reason: ambiguity.reason,
-          });
-          i++; // Skip next line
-          continue;
+      }
+
+      // Pattern 3: Multi-line OCR detection (Line i is Name, Line i+1 is Enrollment or vice versa)
+      if (i < rawLines.length - 1) {
+        const lineA = rawLines[i];
+        const lineB = rawLines[i + 1];
+
+        if (isPossibleName(lineA) && isPossibleEnrollment(lineB)) {
+          const cleanName = sanitizeName(lineA);
+          const enrollmentNo = lineB.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+          if (cleanName.length >= 3 && isPossibleEnrollment(enrollmentNo) && !seenEnrollments.has(enrollmentNo)) {
+            seenEnrollments.add(enrollmentNo);
+            const ambiguity = checkEnrollmentAmbiguity(enrollmentNo);
+            results.push({
+              student_name: cleanName,
+              enrollment_number: enrollmentNo,
+              uncertain_fields: ambiguity.isUncertain ? ['enrollment_number'] : [],
+              uncertainty_reason: ambiguity.reason,
+            });
+            i++;
+            continue;
+          }
+        } else if (isPossibleEnrollment(lineA) && isPossibleName(lineB)) {
+          const enrollmentNo = lineA.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+          const cleanName = sanitizeName(lineB);
+          if (cleanName.length >= 3 && isPossibleEnrollment(enrollmentNo) && !seenEnrollments.has(enrollmentNo)) {
+            seenEnrollments.add(enrollmentNo);
+            const ambiguity = checkEnrollmentAmbiguity(enrollmentNo);
+            results.push({
+              student_name: cleanName,
+              enrollment_number: enrollmentNo,
+              uncertain_fields: ambiguity.isUncertain ? ['enrollment_number'] : [],
+              uncertainty_reason: ambiguity.reason,
+            });
+            i++;
+            continue;
+          }
         }
       }
     }
@@ -372,11 +409,12 @@ export async function extractTextFromPdf(pdfBuffer: Buffer): Promise<{ text: str
   }
 }
 
-// Perform Tesseract OCR on Image Buffer
+// Perform Tesseract OCR on Image Buffer with safe timeout
 export async function extractTextFromImageOcr(imageBuffer: Buffer): Promise<string> {
   try {
-    const { data: { text } } = await Tesseract.recognize(imageBuffer, 'eng');
-    return text || '';
+    const ocrPromise = Tesseract.recognize(imageBuffer, 'eng').then((res) => res?.data?.text || '');
+    const timeoutPromise = new Promise<string>((resolve) => setTimeout(() => resolve(''), 10000));
+    return await Promise.race([ocrPromise, timeoutPromise]);
   } catch (err: any) {
     console.error('Tesseract OCR error:', err);
     return '';

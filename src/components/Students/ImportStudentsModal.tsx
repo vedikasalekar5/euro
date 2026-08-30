@@ -13,26 +13,42 @@ import {
   Plus,
   X,
   FileSpreadsheet,
-  Layers,
   ArrowRight,
   ShieldCheck,
   Check,
   Eye,
   FileSearch,
-  Sparkles,
+  Users,
+  AlertCircle,
+  RotateCcw,
+  Building2,
+  Calendar,
 } from 'lucide-react';
 
-interface ExtractedStudentRow {
+export interface ExtractedStudentRow {
   id: string;
   selected: boolean;
   student_name: string;
   enrollment_number: string;
-  department: Department;
-  year: AcademicYear;
   uncertain_fields: string[];
   uncertainty_reason: string;
   isDuplicate: boolean;
   duplicateAction: 'skip' | 'update';
+}
+
+export interface ImportResultSummary {
+  success: boolean;
+  importedCount: number;
+  updatedCount: number;
+  skippedCount: number;
+  failedCount: number;
+  message: string;
+  details?: Array<{
+    student_name: string;
+    enrollment_number: string;
+    status: 'imported' | 'updated' | 'skipped' | 'failed';
+    message: string;
+  }>;
 }
 
 export const ImportStudentsModal: React.FC = () => {
@@ -41,6 +57,8 @@ export const ImportStudentsModal: React.FC = () => {
     setImportStudentsModal,
     students: existingStudents,
     importStudentsBatch,
+    showToast,
+    refreshData,
   } = useAcademic();
   const { currentTeacher } = useAuth();
 
@@ -48,10 +66,12 @@ export const ImportStudentsModal: React.FC = () => {
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [defaultDept, setDefaultDept] = useState<Department>(
-    currentTeacher?.department || 'Computer Engineering'
+
+  // Manual Programming & Academic Year Selection
+  const [selectedProgramming, setSelectedProgramming] = useState<Department>(
+    (currentTeacher?.department as Department) || 'Computer Engineering'
   );
-  const [defaultYear, setDefaultYear] = useState<AcademicYear>('2nd Year');
+  const [selectedYear, setSelectedYear] = useState<AcademicYear>('2nd Year');
 
   const [isExtracting, setIsExtracting] = useState<boolean>(false);
   const [extractionStage, setExtractionStage] = useState<string>('');
@@ -64,9 +84,12 @@ export const ImportStudentsModal: React.FC = () => {
   const [detectedPageCount, setDetectedPageCount] = useState<number>(1);
   const [extractionEngine, setExtractionEngine] = useState<string>('');
 
-  // Bulk edit state
-  const [bulkDept, setBulkDept] = useState<Department>(defaultDept);
-  const [bulkYear, setBulkYear] = useState<AcademicYear>(defaultYear);
+  // Saving state
+  const [isSaving, setIsSaving] = useState<boolean>(false);
+  const [saveProgressMessage, setSaveProgressMessage] = useState<string>('');
+
+  // Import Result Screen state
+  const [importResult, setImportResult] = useState<ImportResultSummary | null>(null);
 
   if (!importStudentsModal.isOpen) return null;
 
@@ -79,7 +102,20 @@ export const ImportStudentsModal: React.FC = () => {
     setErrorMsg(null);
     setRawDetectedText('');
     setShowRawTextViewer(false);
+    setImportResult(null);
     setImportStudentsModal({ isOpen: false });
+  };
+
+  const handleResetForNewImport = () => {
+    setSelectedFile(null);
+    setPreviewUrl(null);
+    setExtractedRows([]);
+    setHasExtracted(false);
+    setIsExtracting(false);
+    setErrorMsg(null);
+    setRawDetectedText('');
+    setShowRawTextViewer(false);
+    setImportResult(null);
   };
 
   // Pre-process and enhance images using HTML5 Canvas for optimal OCR sharpness & contrast
@@ -96,7 +132,6 @@ export const ImportStudentsModal: React.FC = () => {
           return;
         }
 
-        // Maintain high resolution
         canvas.width = img.width;
         canvas.height = img.height;
         ctx.drawImage(img, 0, 0);
@@ -105,8 +140,8 @@ export const ImportStudentsModal: React.FC = () => {
           const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
           const data = imgData.data;
 
-          // Simple contrast & sharpness boost
-          const contrast = 1.15; // 15% contrast boost
+          // Contrast & sharpness boost
+          const contrast = 1.15;
           const factor = (259 * (contrast * 255 + 255)) / (255 * (259 - contrast * 255));
 
           for (let i = 0; i < data.length; i += 4) {
@@ -137,6 +172,7 @@ export const ImportStudentsModal: React.FC = () => {
   const handleFileChange = (file: File) => {
     setErrorMsg(null);
     setRawDetectedText('');
+    setImportResult(null);
     const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'application/pdf'];
     if (!validTypes.includes(file.type) && !file.name.match(/\.(jpg|jpeg|png|webp|pdf)$/i)) {
       setErrorMsg('Please select a valid image (JPG, PNG, WebP) or PDF file.');
@@ -170,7 +206,7 @@ export const ImportStudentsModal: React.FC = () => {
     if (!clean) return false;
     return existingStudents.some(
       (s) =>
-        (s.enrollment_number || s.enrollmentNo || s.rollNumber || s.prn || '').toUpperCase() === clean
+        (s.enrollment_number || s.enrollmentNo || s.prn || '').toUpperCase() === clean
     );
   };
 
@@ -181,7 +217,6 @@ export const ImportStudentsModal: React.FC = () => {
       const uncertainFields = Array.isArray(item.uncertain_fields) ? item.uncertain_fields : [];
       let reason = item.uncertainty_reason || '';
 
-      // Secondary rule: check for common 0 vs O or 1 vs I digit ambiguities
       if (enrollment && /[OISZB]/.test(enrollment) && /\d/.test(enrollment)) {
         if (!uncertainFields.includes('enrollment_number')) {
           uncertainFields.push('enrollment_number');
@@ -194,8 +229,6 @@ export const ImportStudentsModal: React.FC = () => {
         selected: true,
         student_name: (item.student_name || '').trim(),
         enrollment_number: enrollment,
-        department: (item.department as Department) || defaultDept,
-        year: (item.year as AcademicYear) || defaultYear,
         uncertain_fields: uncertainFields,
         uncertainty_reason: reason,
         isDuplicate: isDup,
@@ -216,7 +249,8 @@ export const ImportStudentsModal: React.FC = () => {
 
     setIsExtracting(true);
     setErrorMsg(null);
-    setExtractionStage('Preprocessing document and optimizing visual clarity...');
+    setImportResult(null);
+    setExtractionStage('Processing document...');
 
     try {
       let base64Data = '';
@@ -231,7 +265,7 @@ export const ImportStudentsModal: React.FC = () => {
         });
       }
 
-      setExtractionStage('Analyzing document structure and extracting student records...');
+      setExtractionStage('Extracting Student Names & Enrollment Numbers...');
 
       const response = await fetch('/api/students/extract-from-document', {
         method: 'POST',
@@ -242,12 +276,30 @@ export const ImportStudentsModal: React.FC = () => {
           fileBase64: base64Data,
           mimeType: selectedFile.type || (selectedFile.name.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg'),
           fileName: selectedFile.name,
-          defaultDepartment: defaultDept,
-          defaultYear: defaultYear,
+          defaultDepartment: selectedProgramming,
+          defaultYear: selectedYear,
         }),
       });
 
-      const result = await response.json();
+      setExtractionStage('Preparing student preview...');
+
+      let result: any = null;
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        try {
+          result = await response.json();
+        } catch (jsonErr) {
+          console.warn('Failed to parse JSON response:', jsonErr);
+        }
+      }
+
+      if (!result) {
+        result = {
+          success: false,
+          students: [],
+          message: 'Unable to extract student details from this file. Please ensure the document is clear and readable.',
+        };
+      }
 
       if (result.rawText) {
         setRawDetectedText(result.rawText);
@@ -264,13 +316,13 @@ export const ImportStudentsModal: React.FC = () => {
       } else {
         setExtractedRows([]);
         setHasExtracted(true);
-        setErrorMsg('Unable to confidently extract student details from this file. Please upload a clearer image/PDF or enter/correct the student information manually.');
+        setErrorMsg(result.message || 'No student records were detected in this file. Make sure the document contains clear student names and enrollment numbers (e.g., Name | Enrollment No).');
       }
     } catch (err: any) {
-      console.error('OCR Extraction Failed:', err);
+      console.error('Extraction Failed:', err);
       setExtractedRows([]);
       setHasExtracted(true);
-      setErrorMsg(`Unable to extract student details from this file (${err.message || 'Network error'}). Please upload a clearer image/PDF or enter student details manually.`);
+      setErrorMsg('No student records were detected in this file. Make sure the document contains clear student names and enrollment numbers.');
     } finally {
       setIsExtracting(false);
     }
@@ -301,8 +353,6 @@ export const ImportStudentsModal: React.FC = () => {
       selected: true,
       student_name: '',
       enrollment_number: '',
-      department: defaultDept,
-      year: defaultYear,
       uncertain_fields: [],
       uncertainty_reason: '',
       isDuplicate: false,
@@ -315,18 +365,6 @@ export const ImportStudentsModal: React.FC = () => {
     setExtractedRows((prev) => prev.map((r) => ({ ...r, selected: select })));
   };
 
-  const handleApplyBulkDept = () => {
-    setExtractedRows((prev) =>
-      prev.map((r) => (r.selected ? { ...r, department: bulkDept } : r))
-    );
-  };
-
-  const handleApplyBulkYear = () => {
-    setExtractedRows((prev) =>
-      prev.map((r) => (r.selected ? { ...r, year: bulkYear } : r))
-    );
-  };
-
   const handleSetAllDuplicateAction = (action: 'skip' | 'update') => {
     setExtractedRows((prev) =>
       prev.map((r) => (r.isDuplicate ? { ...r, duplicateAction: action } : r))
@@ -334,40 +372,79 @@ export const ImportStudentsModal: React.FC = () => {
   };
 
   // Save selected students to database
-  const handleSaveToDatabase = () => {
+  const handleSaveToDatabase = async () => {
+    // 1. Validate Programming and Year are selected
+    if (!selectedProgramming) {
+      setErrorMsg('Please select Programming before importing.');
+      return;
+    }
+    if (!selectedYear) {
+      setErrorMsg('Please select Academic Year before importing.');
+      return;
+    }
+
     const selectedRows = extractedRows.filter((r) => r.selected);
     if (selectedRows.length === 0) {
       setErrorMsg('Please select at least one student to import.');
       return;
     }
 
-    // Validation for empty fields
+    // 2. Validate Student Names and Enrollment Numbers
     const invalidRows = selectedRows.filter(
       (r) => !r.student_name.trim() || !r.enrollment_number.trim()
     );
     if (invalidRows.length > 0) {
-      setErrorMsg(`Please fill in student names and enrollment numbers for all ${invalidRows.length} selected row(s).`);
+      setErrorMsg(`Please ensure all ${invalidRows.length} selected student(s) have both a Student Name and an Enrollment Number.`);
       return;
     }
 
-    const payload = selectedRows.map((r) => ({
-      student_name: r.student_name.trim(),
-      enrollment_number: r.enrollment_number.trim().toUpperCase(),
-      department: r.department,
-      year: r.year,
-      actionOnDuplicate: r.duplicateAction,
-    }));
+    setIsSaving(true);
+    setErrorMsg(null);
+    setSaveProgressMessage(`Importing ${selectedRows.length} student(s) into ${selectedProgramming} (${selectedYear})...`);
 
-    const result = importStudentsBatch(payload);
-    if (result.success) {
-      handleClose();
+    try {
+      // Build payload applying the manually selected Programming and Year to ALL students
+      const payload = selectedRows.map((r) => ({
+        student_name: r.student_name.trim(),
+        enrollment_number: r.enrollment_number.trim().toUpperCase(),
+        department: selectedProgramming,
+        year: selectedYear,
+        division: 'A',
+        actionOnDuplicate: r.duplicateAction,
+      }));
+
+      const result = await importStudentsBatch(payload);
+
+      // Populate summary result for dedicated confirmation view
+      setImportResult({
+        success: result.success,
+        importedCount: result.importedCount,
+        updatedCount: result.updatedCount,
+        skippedCount: result.skippedCount,
+        failedCount: result.failedCount,
+        message: result.message,
+        details: result.details,
+      });
+
+      if (result.success) {
+        showToast(result.message || `${result.importedCount} student(s) imported successfully!`, 'success');
+        await refreshData();
+      } else {
+        showToast(result.message || 'Import finished with warnings.', 'error');
+      }
+    } catch (err: any) {
+      console.error('Import save error:', err);
+      setErrorMsg(err.message || 'An error occurred while saving students to database.');
+    } finally {
+      setIsSaving(false);
+      setSaveProgressMessage('');
     }
   };
 
   const totalExtracted = extractedRows.length;
   const selectedCount = extractedRows.filter((r) => r.selected).length;
   const duplicateCount = extractedRows.filter((r) => r.isDuplicate).length;
-  const uncertainCount = extractedRows.filter((r) => r.uncertain_fields.length > 0).length;
+  const readyCount = extractedRows.filter((r) => r.selected && !r.isDuplicate).length;
 
   return (
     <div
@@ -386,13 +463,13 @@ export const ImportStudentsModal: React.FC = () => {
             </div>
             <div>
               <h3 className="text-base font-black text-white flex items-center gap-2">
-                Import Students from Document / Image / PDF
+                Import Students from PDF / Image / Document
                 <span className="px-2.5 py-0.5 text-[10px] font-bold bg-[#102A43] text-[#00D9FF] rounded-full border border-[#00D9FF]/40">
-                  Accurate OCR &amp; Table Extraction
+                  Name + Enrollment Number Only
                 </span>
               </h3>
               <p className="text-xs text-[#67E8F9]/80 mt-0.5">
-                Upload student rosters, photos, screenshots, or PDFs to automatically extract student names, enrollment IDs, programme, and year.
+                Extracts student names and enrollment numbers directly from documents. Programming and Year are selected manually.
               </p>
             </div>
           </div>
@@ -407,7 +484,8 @@ export const ImportStudentsModal: React.FC = () => {
 
         {/* Modal Body */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          {errorMsg && (
+          {/* Error Banner */}
+          {errorMsg && !importResult && (
             <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-amber-900">
               <div className="flex items-start sm:items-center gap-2.5">
                 <AlertTriangle className="w-4 h-4 shrink-0 text-[#F59E0B] mt-0.5 sm:mt-0" />
@@ -427,13 +505,13 @@ export const ImportStudentsModal: React.FC = () => {
             </div>
           )}
 
-          {/* Raw Text / OCR Auditing Viewer */}
+          {/* Raw Text Viewer */}
           {showRawTextViewer && rawDetectedText && (
             <div className="p-4 bg-[#0B1F3A] text-[#F5F9FC] rounded-2xl border border-[#102A43] text-xs font-mono">
               <div className="flex items-center justify-between pb-2 mb-2 border-b border-[#102A43]">
                 <span className="font-bold text-[#00D9FF] flex items-center gap-2">
                   <FileSearch className="w-4 h-4 text-[#00D9FF]" />
-                  Raw Detected Document Text:
+                  Verbatim Extracted Text:
                 </span>
                 <span className="text-[11px] text-[#64748B]">
                   {detectedPageCount > 1 ? `${detectedPageCount} pages` : 'Single document'} • {extractionEngine}
@@ -445,8 +523,158 @@ export const ImportStudentsModal: React.FC = () => {
             </div>
           )}
 
-          {!hasExtracted ? (
-            /* Upload Screen */
+          {/* Step 3: Import Result Summary Screen */}
+          {importResult ? (
+            <div className="space-y-6 animate-in fade-in zoom-in-95 duration-200" id="import-result-summary-section">
+              <div
+                className={`p-6 rounded-2xl border ${
+                  importResult.success && importResult.importedCount > 0
+                    ? 'bg-[#DCFCE7]/40 border-[#BBF7D0]'
+                    : importResult.success
+                    ? 'bg-[#F5F9FC] border-[#D7E3EA]'
+                    : 'bg-rose-50 border-rose-200'
+                }`}
+              >
+                <div className="flex items-start gap-4">
+                  <div
+                    className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${
+                      importResult.success && importResult.importedCount > 0
+                        ? 'bg-[#16A34A] text-white'
+                        : importResult.success
+                        ? 'bg-[#0B1F3A] text-[#00D9FF]'
+                        : 'bg-rose-500 text-white'
+                    }`}
+                  >
+                    {importResult.success ? (
+                      <CheckCircle2 className="w-7 h-7" />
+                    ) : (
+                      <AlertCircle className="w-7 h-7" />
+                    )}
+                  </div>
+                  <div className="flex-1">
+                    <h4 className="text-lg font-black text-[#172B4D]">
+                      {importResult.success && importResult.importedCount > 0
+                        ? 'Import Completed Successfully'
+                        : importResult.success
+                        ? 'Import Completed (Existing Records Preserved)'
+                        : 'Import Finished with Warnings'}
+                    </h4>
+                    <p className="text-xs text-[#64748B] mt-1 font-medium">
+                      {importResult.message}
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2 text-xs font-bold text-[#0B1F3A]">
+                      <span className="px-2.5 py-1 bg-white rounded-lg border border-[#D7E3EA]">
+                        Programming: {selectedProgramming}
+                      </span>
+                      <span className="px-2.5 py-1 bg-white rounded-lg border border-[#D7E3EA]">
+                        Year: {selectedYear}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Statistics Breakdown */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5">
+                <div className="p-4 bg-[#DCFCE7] rounded-2xl border border-[#BBF7D0]">
+                  <div className="text-xs font-bold text-[#16A34A] flex items-center gap-1.5">
+                    <Check className="w-4 h-4" />
+                    New Students Added
+                  </div>
+                  <div className="text-2xl font-black text-[#16A34A] mt-1">
+                    {importResult.importedCount}
+                  </div>
+                </div>
+
+                <div className="p-4 bg-[#F5F9FC] rounded-2xl border border-[#D7E3EA]">
+                  <div className="text-xs font-bold text-[#0B1F3A] flex items-center gap-1.5">
+                    <RefreshCw className="w-4 h-4" />
+                    Students Updated
+                  </div>
+                  <div className="text-2xl font-black text-[#0B1F3A] mt-1">
+                    {importResult.updatedCount}
+                  </div>
+                </div>
+
+                <div className="p-4 bg-amber-50 rounded-2xl border border-amber-200">
+                  <div className="text-xs font-bold text-amber-800 flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4 text-[#F59E0B]" />
+                    Already Exist (Skipped)
+                  </div>
+                  <div className="text-2xl font-black text-amber-900 mt-1">
+                    {importResult.skippedCount}
+                  </div>
+                </div>
+
+                <div className="p-4 bg-rose-50 rounded-2xl border border-rose-200">
+                  <div className="text-xs font-bold text-rose-800 flex items-center gap-1.5">
+                    <X className="w-4 h-4 text-rose-500" />
+                    Failed Records
+                  </div>
+                  <div className="text-2xl font-black text-rose-900 mt-1">
+                    {importResult.failedCount}
+                  </div>
+                </div>
+              </div>
+
+              {/* Ledger Breakdown */}
+              {importResult.details && importResult.details.length > 0 && (
+                <div className="border border-[#D7E3EA] rounded-2xl overflow-hidden shadow-2xs">
+                  <div className="px-5 py-3.5 bg-[#F5F9FC] border-b border-[#D7E3EA] flex items-center justify-between">
+                    <span className="text-xs font-bold text-[#0B1F3A]">
+                      Import Audit Ledger ({importResult.details.length} Records Processed)
+                    </span>
+                    <span className="text-[11px] text-[#64748B]">
+                      Saved directly into Student Database
+                    </span>
+                  </div>
+                  <div className="max-h-60 overflow-y-auto">
+                    <table className="w-full text-left text-xs divide-y divide-[#D7E3EA]">
+                      <thead className="bg-[#F5F9FC] text-[#0B1F3A] text-[11px] font-bold">
+                        <tr>
+                          <th className="px-4 py-2.5">#</th>
+                          <th className="px-4 py-2.5">Student Name</th>
+                          <th className="px-4 py-2.5">Enrollment Number / PRN</th>
+                          <th className="px-4 py-2.5">Result Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#D7E3EA] bg-white">
+                        {importResult.details.map((d, i) => {
+                          let badgeBg = 'bg-[#DCFCE7] text-[#16A34A] border-[#BBF7D0]';
+                          let badgeText = 'Imported Successfully';
+
+                          if (d.status === 'updated') {
+                            badgeBg = 'bg-[#0B1F3A]/5 text-[#0B1F3A] border-[#D7E3EA]';
+                            badgeText = 'Updated Record';
+                          } else if (d.status === 'skipped') {
+                            badgeBg = 'bg-amber-50 text-amber-800 border-amber-200';
+                            badgeText = 'Already Exists (Skipped)';
+                          } else if (d.status === 'failed') {
+                            badgeBg = 'bg-rose-50 text-rose-700 border-rose-200';
+                            badgeText = d.message || 'Failed';
+                          }
+
+                          return (
+                            <tr key={i} className="hover:bg-[#F5F9FC]">
+                              <td className="px-4 py-2 font-mono text-[#64748B]">{i + 1}</td>
+                              <td className="px-4 py-2 font-bold text-[#172B4D]">{d.student_name}</td>
+                              <td className="px-4 py-2 font-mono font-bold text-[#0B1F3A]">{d.enrollment_number}</td>
+                              <td className="px-4 py-2">
+                                <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${badgeBg}`}>
+                                  {badgeText}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : !hasExtracted ? (
+            /* Step 1: Upload Screen */
             <div className="space-y-6">
               {/* Document Dropzone */}
               <div
@@ -478,10 +706,10 @@ export const ImportStudentsModal: React.FC = () => {
                 </div>
 
                 <h4 className="text-sm font-bold text-[#172B4D]">
-                  {selectedFile ? selectedFile.name : 'Click to select or drag and drop student document'}
+                  {selectedFile ? selectedFile.name : 'Click to select or drag & drop student list file'}
                 </h4>
                 <p className="text-xs text-[#64748B] mt-1 max-w-md mx-auto">
-                  Supports <strong className="text-[#0B1F3A]">JPG, JPEG, PNG, and PDF</strong> files. Scanned roster sheets, photos of attendance registers, or multi-page digital class lists.
+                  Supports <strong className="text-[#0B1F3A]">PDF, JPG, JPEG, PNG, and WebP</strong> files. Scanned student lists, class rosters, marks sheets, or screenshots.
                 </p>
 
                 {selectedFile && (
@@ -512,50 +740,57 @@ export const ImportStudentsModal: React.FC = () => {
                     className="w-16 h-16 object-cover rounded-xl border border-[#D7E3EA]"
                   />
                   <div className="flex-1 text-xs">
-                    <p className="font-bold text-[#172B4D]">Image Preview Ready</p>
-                    <p className="text-[#64748B]">The OCR engine will read tabular rows, student names, and enrollment numbers directly from this uploaded file.</p>
+                    <p className="font-bold text-[#172B4D]">Document Preview Ready</p>
+                    <p className="text-[#64748B]">The parser will extract student names and enrollment numbers directly from this uploaded document.</p>
                   </div>
                 </div>
               )}
 
-              {/* Extraction Fallback Configurations */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-4 bg-[#F5F9FC] rounded-2xl border border-[#D7E3EA]">
-                <div>
-                  <label className="block text-xs font-bold text-[#172B4D] mb-1">
-                    Fallback Programme (If not explicitly present in file)
-                  </label>
-                  <select
-                    value={defaultDept}
-                    onChange={(e) => setDefaultDept(e.target.value as Department)}
-                    className="w-full text-xs font-semibold px-3 py-2 rounded-xl border border-[#D7E3EA] bg-white text-[#172B4D] focus:border-[#00D9FF] outline-none"
-                    id="import-default-dept-select"
-                  >
-                    <option value="Computer Engineering">Computer Engineering</option>
-                    <option value="Civil Engineering">Civil Engineering</option>
-                    <option value="Mechanical Engineering">Mechanical Engineering</option>
-                    <option value="Electrical Engineering">Electrical Engineering</option>
-                  </select>
+              {/* Manual Programming & Year Selection */}
+              <div className="p-5 bg-[#F5F9FC] rounded-2xl border border-[#D7E3EA] space-y-4">
+                <div className="flex items-center gap-2 text-xs font-bold text-[#0B1F3A]">
+                  <Building2 className="w-4 h-4 text-[#0094B3]" />
+                  <span>Select Target Programme &amp; Academic Year (Applied to all imported students)</span>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-bold text-[#172B4D] mb-1">
-                    Fallback Academic Year (If not explicitly present in file)
-                  </label>
-                  <select
-                    value={defaultYear}
-                    onChange={(e) => setDefaultYear(e.target.value as AcademicYear)}
-                    className="w-full text-xs font-semibold px-3 py-2 rounded-xl border border-[#D7E3EA] bg-white text-[#172B4D] focus:border-[#00D9FF] outline-none"
-                    id="import-default-year-select"
-                  >
-                    <option value="1st Year">1st Year</option>
-                    <option value="2nd Year">2nd Year</option>
-                    <option value="3rd Year">3rd Year</option>
-                    <option value="2nd Year DSY">2nd Year DSY</option>
-                  </select>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold text-[#172B4D] mb-1.5">
+                      Programming / Department <span className="text-rose-500">*</span>
+                    </label>
+                    <select
+                      value={selectedProgramming}
+                      onChange={(e) => setSelectedProgramming(e.target.value as Department)}
+                      className="w-full text-xs font-semibold px-3.5 py-2.5 rounded-xl border border-[#D7E3EA] bg-white text-[#172B4D] focus:border-[#00D9FF] focus:ring-2 focus:ring-[#00D9FF]/20 outline-none transition-all"
+                      id="import-programming-select"
+                    >
+                      <option value="Computer Engineering">Computer Engineering</option>
+                      <option value="Civil Engineering">Civil Engineering</option>
+                      <option value="Mechanical Engineering">Mechanical Engineering</option>
+                      <option value="Electrical Engineering">Electrical Engineering</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-[#172B4D] mb-1.5">
+                      Academic Year <span className="text-rose-500">*</span>
+                    </label>
+                    <select
+                      value={selectedYear}
+                      onChange={(e) => setSelectedYear(e.target.value as AcademicYear)}
+                      className="w-full text-xs font-semibold px-3.5 py-2.5 rounded-xl border border-[#D7E3EA] bg-white text-[#172B4D] focus:border-[#00D9FF] focus:ring-2 focus:ring-[#00D9FF]/20 outline-none transition-all"
+                      id="import-year-select"
+                    >
+                      <option value="1st Year">1st Year</option>
+                      <option value="2nd Year">2nd Year</option>
+                      <option value="3rd Year">3rd Year</option>
+                      <option value="2nd Year DSY">2nd Year DSY</option>
+                    </select>
+                  </div>
                 </div>
               </div>
 
-              {/* Extraction Action Buttons */}
+              {/* Extraction Action Button */}
               <div className="flex items-center justify-end gap-3 pt-2">
                 <button
                   type="button"
@@ -571,7 +806,7 @@ export const ImportStudentsModal: React.FC = () => {
                   {isExtracting ? (
                     <>
                       <RefreshCw className="w-4 h-4 animate-spin text-[#00D9FF]" />
-                      <span>{extractionStage || 'Extracting Student Records...'}</span>
+                      <span>{extractionStage || 'Extracting Students...'}</span>
                     </>
                   ) : (
                     <>
@@ -583,20 +818,24 @@ export const ImportStudentsModal: React.FC = () => {
               </div>
             </div>
           ) : (
-            /* Review & Verification Table Screen */
-            <div className="space-y-5">
-              {/* Source Document Reference Banner */}
-              <div className="flex flex-wrap items-center justify-between gap-3 p-4 bg-[#F5F9FC] rounded-2xl border border-[#D7E3EA]">
-                <div className="flex items-center gap-2.5 text-xs">
-                  <FileText className="w-4 h-4 text-[#0094B3]" />
+            /* Step 2: Review & Verification Preview Screen */
+            <div className="space-y-5" id="import-preview-section">
+              {/* Preview Header: Document Name & Students Found */}
+              <div className="flex flex-wrap items-center justify-between gap-3 p-4 bg-[#0B1F3A] text-white rounded-2xl border border-[#102A43]">
+                <div className="flex items-center gap-3 text-xs">
+                  <div className="p-2 bg-[#102A43] text-[#00D9FF] rounded-xl">
+                    <FileText className="w-5 h-5" />
+                  </div>
                   <div>
-                    <span className="text-[#64748B] font-semibold">SOURCE FILE: </span>
-                    <strong className="text-[#172B4D] font-bold">{selectedFile?.name || 'Uploaded Document'}</strong>
-                    {detectedPageCount > 1 && (
-                      <span className="ml-2 px-2 py-0.5 text-[10px] bg-[#0B1F3A] text-[#00D9FF] rounded font-bold">
-                        {detectedPageCount} Pages Processed
+                    <div className="text-[11px] text-[#67E8F9]/80 font-bold uppercase tracking-wider">
+                      IMPORT STUDENTS PREVIEW
+                    </div>
+                    <div className="text-sm font-black text-white mt-0.5 flex items-center gap-2">
+                      <span>File: {selectedFile?.name || 'students.pdf'}</span>
+                      <span className="px-2.5 py-0.5 text-xs bg-[#00D9FF] text-[#0B1F3A] rounded-full font-black">
+                        Students Found: {totalExtracted}
                       </span>
-                    )}
+                    </div>
                   </div>
                 </div>
 
@@ -604,96 +843,62 @@ export const ImportStudentsModal: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => setShowRawTextViewer(!showRawTextViewer)}
-                    className="px-3 py-1.5 bg-white hover:bg-[#F5F9FC] border border-[#D7E3EA] text-[#0B1F3A] text-xs font-bold rounded-lg flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                    className="px-3 py-1.5 bg-[#102A43] hover:bg-[#18395C] border border-[#00D9FF]/30 text-[#00D9FF] text-xs font-bold rounded-lg flex items-center gap-1.5 cursor-pointer shadow-2xs"
                   >
-                    <Eye className="w-3.5 h-3.5 text-[#0094B3]" />
-                    <span>{showRawTextViewer ? 'Hide OCR Text' : 'View Extracted Text'}</span>
+                    <Eye className="w-3.5 h-3.5" />
+                    <span>{showRawTextViewer ? 'Hide Verbatim Text' : 'View Verbatim Text'}</span>
                   </button>
                 )}
               </div>
 
-              {/* Summary Stats Header */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <div className="p-3.5 bg-white rounded-2xl border border-[#D7E3EA] shadow-2xs">
-                  <div className="text-[11px] font-bold text-[#64748B]">Total Extracted</div>
-                  <div className="text-xl font-black text-[#172B4D] mt-0.5">{totalExtracted}</div>
-                </div>
-                <div className="p-3.5 bg-[#DCFCE7] rounded-2xl border border-[#BBF7D0] shadow-2xs">
-                  <div className="text-[11px] font-bold text-[#16A34A]">Selected to Save</div>
-                  <div className="text-xl font-black text-[#16A34A] mt-0.5">{selectedCount}</div>
-                </div>
-                <div className="p-3.5 bg-[#F5F9FC] rounded-2xl border border-[#D7E3EA] shadow-2xs">
-                  <div className="text-[11px] font-bold text-[#0B1F3A]">Existing Duplicates</div>
-                  <div className="text-xl font-black text-[#0B1F3A] mt-0.5">{duplicateCount}</div>
-                </div>
-                <div className="p-3.5 bg-amber-50 rounded-2xl border border-amber-200 shadow-2xs">
-                  <div className="text-[11px] font-bold text-[#F59E0B]">OCR Review Flags</div>
-                  <div className="text-xl font-black text-amber-800 mt-0.5">{uncertainCount}</div>
-                </div>
-              </div>
-
-              {/* Review Guidance Banner */}
-              <div className="p-4 bg-[#F5F9FC] border border-[#D7E3EA] rounded-2xl flex items-start gap-3 text-xs text-[#172B4D]">
-                <ShieldCheck className="w-4 h-4 text-[#0094B3] shrink-0 mt-0.5" />
-                <div className="leading-relaxed">
-                  <strong>Verification Ledger:</strong> The student details extracted from your uploaded file are listed below. You may edit names, enrollment IDs, departments, or academic years, and resolve duplicate actions before saving.
-                </div>
-              </div>
-
-              {/* Batch Editing Controls Bar */}
-              <div className="p-3.5 bg-white rounded-2xl border border-[#D7E3EA] shadow-2xs flex flex-wrap items-center justify-between gap-3 text-xs">
-                <div className="flex flex-wrap items-center gap-3">
+              {/* Manual Programming & Year Selection Bar */}
+              <div className="p-4 bg-[#F5F9FC] rounded-2xl border border-[#D7E3EA] flex flex-wrap items-center justify-between gap-4">
+                <div className="flex flex-wrap items-center gap-4">
                   <div className="flex items-center gap-2">
-                    <span className="font-bold text-[#172B4D]">Set Programme for selected:</span>
+                    <label className="text-xs font-bold text-[#172B4D] flex items-center gap-1.5">
+                      <Building2 className="w-4 h-4 text-[#0094B3]" />
+                      Programming:
+                    </label>
                     <select
-                      value={bulkDept}
-                      onChange={(e) => setBulkDept(e.target.value as Department)}
-                      className="px-2.5 py-1.5 rounded-lg border border-[#D7E3EA] bg-[#F5F9FC] text-[#172B4D] font-semibold"
+                      value={selectedProgramming}
+                      onChange={(e) => setSelectedProgramming(e.target.value as Department)}
+                      className="px-3 py-1.5 text-xs font-bold rounded-xl border border-[#D7E3EA] bg-white text-[#172B4D] shadow-2xs focus:border-[#00D9FF] outline-none"
+                      id="preview-programming-select"
                     >
                       <option value="Computer Engineering">Computer Engineering</option>
                       <option value="Civil Engineering">Civil Engineering</option>
                       <option value="Mechanical Engineering">Mechanical Engineering</option>
                       <option value="Electrical Engineering">Electrical Engineering</option>
                     </select>
-                    <button
-                      type="button"
-                      onClick={handleApplyBulkDept}
-                      className="px-2.5 py-1.5 bg-[#F5F9FC] hover:bg-[#E2ECF4] font-bold rounded-lg text-[#0B1F3A] border border-[#D7E3EA] cursor-pointer"
-                    >
-                      Apply
-                    </button>
                   </div>
 
                   <div className="flex items-center gap-2">
-                    <span className="font-bold text-[#172B4D]">Set Year:</span>
+                    <label className="text-xs font-bold text-[#172B4D] flex items-center gap-1.5">
+                      <Calendar className="w-4 h-4 text-[#0094B3]" />
+                      Year:
+                    </label>
                     <select
-                      value={bulkYear}
-                      onChange={(e) => setBulkYear(e.target.value as AcademicYear)}
-                      className="px-2.5 py-1.5 rounded-lg border border-[#D7E3EA] bg-[#F5F9FC] text-[#172B4D] font-semibold"
+                      value={selectedYear}
+                      onChange={(e) => setSelectedYear(e.target.value as AcademicYear)}
+                      className="px-3 py-1.5 text-xs font-bold rounded-xl border border-[#D7E3EA] bg-white text-[#172B4D] shadow-2xs focus:border-[#00D9FF] outline-none"
+                      id="preview-year-select"
                     >
                       <option value="1st Year">1st Year</option>
                       <option value="2nd Year">2nd Year</option>
                       <option value="3rd Year">3rd Year</option>
                       <option value="2nd Year DSY">2nd Year DSY</option>
                     </select>
-                    <button
-                      type="button"
-                      onClick={handleApplyBulkYear}
-                      className="px-2.5 py-1.5 bg-[#F5F9FC] hover:bg-[#E2ECF4] font-bold rounded-lg text-[#0B1F3A] border border-[#D7E3EA] cursor-pointer"
-                    >
-                      Apply
-                    </button>
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2">
                   {duplicateCount > 0 && (
-                    <div className="flex items-center gap-1.5 bg-[#F5F9FC] px-2.5 py-1 rounded-lg border border-[#D7E3EA]">
-                      <span className="text-[#0B1F3A] font-bold">Duplicates:</span>
+                    <div className="flex items-center gap-1.5 bg-white px-2.5 py-1 rounded-xl border border-[#D7E3EA] text-xs">
+                      <span className="text-amber-800 font-bold">Duplicates ({duplicateCount}):</span>
                       <button
                         type="button"
                         onClick={() => handleSetAllDuplicateAction('skip')}
-                        className="px-2 py-0.5 bg-white rounded font-bold text-[#0B1F3A] hover:text-[#0094B3] border border-[#D7E3EA] cursor-pointer"
+                        className="px-2 py-0.5 bg-[#F5F9FC] rounded font-bold text-[#0B1F3A] hover:bg-slate-200 border border-[#D7E3EA] cursor-pointer"
                       >
                         Skip All
                       </button>
@@ -710,8 +915,8 @@ export const ImportStudentsModal: React.FC = () => {
                   <button
                     type="button"
                     onClick={handleAddRow}
-                    className="px-3 py-1.5 bg-[#0B1F3A] hover:bg-[#102A43] text-white font-bold rounded-lg flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95 border border-[#00D9FF]/30"
-                    id="import-add-row-btn"
+                    className="px-3 py-1.5 bg-[#0B1F3A] hover:bg-[#102A43] text-white text-xs font-bold rounded-xl flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95 border border-[#00D9FF]/30"
+                    id="preview-add-row-btn"
                   >
                     <Plus className="w-3.5 h-3.5 text-[#00D9FF]" />
                     <span>Add Row</span>
@@ -719,7 +924,27 @@ export const ImportStudentsModal: React.FC = () => {
                 </div>
               </div>
 
-              {/* Table Container */}
+              {/* Status Badges Bar */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="p-3.5 bg-white rounded-2xl border border-[#D7E3EA] shadow-2xs">
+                  <div className="text-[11px] font-bold text-[#64748B]">Total Extracted</div>
+                  <div className="text-xl font-black text-[#172B4D] mt-0.5">{totalExtracted}</div>
+                </div>
+                <div className="p-3.5 bg-[#DCFCE7] rounded-2xl border border-[#BBF7D0] shadow-2xs">
+                  <div className="text-[11px] font-bold text-[#16A34A]">Ready to Import</div>
+                  <div className="text-xl font-black text-[#16A34A] mt-0.5">{readyCount}</div>
+                </div>
+                <div className="p-3.5 bg-amber-50 rounded-2xl border border-amber-200 shadow-2xs">
+                  <div className="text-[11px] font-bold text-amber-800">Already Exist</div>
+                  <div className="text-xl font-black text-amber-900 mt-0.5">{duplicateCount}</div>
+                </div>
+                <div className="p-3.5 bg-[#F5F9FC] rounded-2xl border border-[#D7E3EA] shadow-2xs">
+                  <div className="text-[11px] font-bold text-[#0B1F3A]">Selected Rows</div>
+                  <div className="text-xl font-black text-[#0B1F3A] mt-0.5">{selectedCount}</div>
+                </div>
+              </div>
+
+              {/* Preview Table Container */}
               <div className="border border-[#D7E3EA] rounded-2xl overflow-hidden shadow-xs">
                 <div className="overflow-x-auto max-h-[380px]">
                   <table className="w-full text-left text-xs border-collapse" id="extracted-students-table">
@@ -734,22 +959,52 @@ export const ImportStudentsModal: React.FC = () => {
                             id="select-all-extracted-students-checkbox"
                           />
                         </th>
-                        <th className="p-3 w-10 text-center">Sr.</th>
-                        <th className="p-3 min-w-[200px]">Student Name</th>
-                        <th className="p-3 min-w-[150px]">Enrollment Number</th>
-                        <th className="p-3 min-w-[170px]">Programme</th>
-                        <th className="p-3 min-w-[120px]">Academic Year</th>
-                        <th className="p-3 min-w-[180px]">Status &amp; Validation</th>
+                        <th className="p-3 w-12 text-center">#</th>
+                        <th className="p-3 min-w-[240px]">Student Name</th>
+                        <th className="p-3 min-w-[200px]">Enrollment Number / PRN</th>
+                        <th className="p-3 min-w-[180px]">Status</th>
                         <th className="p-3 w-12 text-center">Action</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#D7E3EA] text-[#172B4D]">
                       {extractedRows.length === 0 ? (
                         <tr>
-                          <td colSpan={8} className="p-8 text-center text-[#64748B]">
-                            <AlertTriangle className="w-8 h-8 mx-auto mb-2 text-[#F59E0B]" />
-                            <p className="font-bold text-[#172B4D]">No student records found in table</p>
-                            <p className="text-xs text-[#64748B] mt-1">Click "+ Add Row" above to enter students manually, or view the extracted raw text.</p>
+                          <td colSpan={6} className="p-8 text-center text-[#64748B]">
+                            <div className="max-w-xl mx-auto space-y-4">
+                              <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto border border-amber-200">
+                                <AlertTriangle className="w-6 h-6" />
+                              </div>
+                              <div>
+                                <h4 className="text-sm font-bold text-[#172B4D]">
+                                  No student records were detected in this file.
+                                </h4>
+                                <p className="text-xs text-[#64748B] mt-1.5 leading-relaxed">
+                                  Make sure the document contains clear student names and enrollment numbers (e.g., Name | Enrollment No).
+                                </p>
+                              </div>
+
+                              <div className="flex items-center justify-center gap-3 pt-2">
+                                <button
+                                  type="button"
+                                  onClick={handleAddRow}
+                                  className="px-4 py-2 bg-[#0B1F3A] hover:bg-[#102A43] text-white text-xs font-bold rounded-xl shadow-xs cursor-pointer flex items-center gap-1.5"
+                                >
+                                  <Plus className="w-3.5 h-3.5 text-[#00D9FF]" />
+                                  <span>Add Student Manually</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setHasExtracted(false);
+                                    setExtractedRows([]);
+                                    setErrorMsg(null);
+                                  }}
+                                  className="px-4 py-2 bg-white hover:bg-[#F5F9FC] border border-[#D7E3EA] text-[#0B1F3A] text-xs font-bold rounded-xl cursor-pointer"
+                                >
+                                  Upload Different File
+                                </button>
+                              </div>
+                            </div>
                           </td>
                         </tr>
                       ) : (
@@ -780,7 +1035,7 @@ export const ImportStudentsModal: React.FC = () => {
                                   value={row.student_name}
                                   onChange={(e) => handleRowChange(row.id, 'student_name', e.target.value)}
                                   placeholder="Enter Student Name"
-                                  className={`w-full px-2.5 py-1.5 text-xs font-semibold rounded-lg border bg-white text-[#172B4D] transition-all ${
+                                  className={`w-full px-3 py-1.5 text-xs font-semibold rounded-lg border bg-white text-[#172B4D] transition-all ${
                                     !row.student_name.trim()
                                       ? 'border-rose-400 ring-2 ring-rose-400/20'
                                       : 'border-[#D7E3EA] focus:border-[#00D9FF]'
@@ -788,58 +1043,33 @@ export const ImportStudentsModal: React.FC = () => {
                                 />
                               </td>
                               <td className="p-2">
-                                <div className="relative">
-                                  <input
-                                    type="text"
-                                    value={row.enrollment_number}
-                                    onChange={(e) => handleRowChange(row.id, 'enrollment_number', e.target.value)}
-                                    placeholder="e.g. 24110980111"
-                                    className={`w-full px-2.5 py-1.5 text-xs font-mono font-bold uppercase rounded-lg border bg-white text-[#172B4D] transition-all ${
-                                      !row.enrollment_number.trim()
-                                        ? 'border-rose-400 ring-2 ring-rose-400/20'
-                                        : hasOcrWarning
-                                        ? 'border-amber-400 bg-amber-50/40 text-amber-900'
-                                        : 'border-[#D7E3EA] focus:border-[#00D9FF]'
-                                    }`}
-                                  />
-                                </div>
-                              </td>
-                              <td className="p-2">
-                                <select
-                                  value={row.department}
-                                  onChange={(e) => handleRowChange(row.id, 'department', e.target.value as Department)}
-                                  className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-[#D7E3EA] bg-white text-[#172B4D]"
-                                >
-                                  <option value="Computer Engineering">Computer Engineering</option>
-                                  <option value="Civil Engineering">Civil Engineering</option>
-                                  <option value="Mechanical Engineering">Mechanical Engineering</option>
-                                  <option value="Electrical Engineering">Electrical Engineering</option>
-                                </select>
-                              </td>
-                              <td className="p-2">
-                                <select
-                                  value={row.year}
-                                  onChange={(e) => handleRowChange(row.id, 'year', e.target.value as AcademicYear)}
-                                  className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-[#D7E3EA] bg-white text-[#172B4D]"
-                                >
-                                  <option value="1st Year">1st Year</option>
-                                  <option value="2nd Year">2nd Year</option>
-                                  <option value="3rd Year">3rd Year</option>
-                                  <option value="2nd Year DSY">2nd Year DSY</option>
-                                </select>
+                                <input
+                                  type="text"
+                                  value={row.enrollment_number}
+                                  onChange={(e) => handleRowChange(row.id, 'enrollment_number', e.target.value)}
+                                  placeholder="e.g. 24110980114"
+                                  className={`w-full px-3 py-1.5 text-xs font-mono font-bold uppercase rounded-lg border bg-white text-[#172B4D] transition-all ${
+                                    !row.enrollment_number.trim()
+                                      ? 'border-rose-400 ring-2 ring-rose-400/20'
+                                      : hasOcrWarning
+                                      ? 'border-amber-400 bg-amber-50/40 text-amber-900'
+                                      : 'border-[#D7E3EA] focus:border-[#00D9FF]'
+                                  }`}
+                                />
                               </td>
                               <td className="p-3">
                                 <div className="flex flex-col gap-1">
                                   {row.isDuplicate ? (
                                     <div className="flex items-center gap-1.5 flex-wrap">
-                                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-bold uppercase rounded bg-[#F5F9FC] text-[#0B1F3A] border border-[#D7E3EA]">
-                                        Exists
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded-md bg-amber-50 text-amber-800 border border-amber-200">
+                                        <AlertTriangle className="w-3 h-3 text-[#F59E0B]" />
+                                        Already Exists
                                       </span>
                                       <div className="inline-flex rounded border border-[#D7E3EA] overflow-hidden text-[10px]">
                                         <button
                                           type="button"
                                           onClick={() => handleRowChange(row.id, 'duplicateAction', 'skip')}
-                                          className={`px-1.5 py-0.5 font-bold cursor-pointer ${
+                                          className={`px-2 py-0.5 font-bold cursor-pointer ${
                                             row.duplicateAction === 'skip'
                                               ? 'bg-[#0B1F3A] text-white'
                                               : 'bg-white text-[#64748B]'
@@ -850,7 +1080,7 @@ export const ImportStudentsModal: React.FC = () => {
                                         <button
                                           type="button"
                                           onClick={() => handleRowChange(row.id, 'duplicateAction', 'update')}
-                                          className={`px-1.5 py-0.5 font-bold cursor-pointer ${
+                                          className={`px-2 py-0.5 font-bold cursor-pointer ${
                                             row.duplicateAction === 'update'
                                               ? 'bg-[#0B1F3A] text-[#00D9FF]'
                                               : 'bg-white text-[#64748B]'
@@ -866,9 +1096,9 @@ export const ImportStudentsModal: React.FC = () => {
                                       <span title={row.uncertainty_reason}>Check OCR characters</span>
                                     </div>
                                   ) : (
-                                    <div className="flex items-center gap-1 text-[11px] text-[#16A34A] font-semibold">
+                                    <div className="flex items-center gap-1 text-[11px] text-[#16A34A] font-bold">
                                       <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-[#22C55E]" />
-                                      <span>Ready to Add</span>
+                                      <span>Ready</span>
                                     </div>
                                   )}
                                 </div>
@@ -897,22 +1127,51 @@ export const ImportStudentsModal: React.FC = () => {
 
         {/* Modal Footer */}
         <div className="flex items-center justify-between px-6 py-4 border-t border-[#D7E3EA] bg-[#F5F9FC] shrink-0">
-          {hasExtracted ? (
-            <>
+          {importResult ? (
+            /* Result Screen Footer */
+            <div className="w-full flex items-center justify-between gap-3">
               <button
                 type="button"
-                onClick={() => {
-                  setHasExtracted(false);
-                  setExtractedRows([]);
-                  setErrorMsg(null);
-                }}
-                className="px-4 py-2 text-xs font-bold text-[#64748B] hover:bg-[#E2ECF4] hover:text-[#0B1F3A] rounded-xl transition-colors cursor-pointer"
-                id="import-reupload-btn"
+                onClick={handleResetForNewImport}
+                className="px-4 py-2.5 text-xs font-bold text-[#0B1F3A] hover:bg-[#E2ECF4] rounded-xl transition-colors cursor-pointer flex items-center gap-2 border border-[#D7E3EA]"
+                id="btn-import-another-doc"
               >
-                Upload Different File
+                <RotateCcw className="w-4 h-4 text-[#0094B3]" />
+                <span>Import Another Document</span>
               </button>
 
-              <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={handleClose}
+                className="px-6 py-2.5 text-xs font-bold rounded-xl bg-[#0B1F3A] hover:bg-[#102A43] text-white shadow-md shadow-[#0B1F3A]/20 transition-all cursor-pointer active:scale-95 flex items-center gap-2 border border-[#00D9FF]/30"
+                id="btn-view-imported-students"
+              >
+                <Users className="w-4 h-4 text-[#00D9FF]" />
+                <span>View Students in List</span>
+              </button>
+            </div>
+          ) : hasExtracted ? (
+            /* Preview Footer */
+            <div className="w-full flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <div className="text-xs font-bold text-[#172B4D] flex items-center gap-3">
+                <span>Programming: <strong className="text-[#0B1F3A]">{selectedProgramming}</strong></span>
+                <span className="text-[#D7E3EA]">|</span>
+                <span>Year: <strong className="text-[#0B1F3A]">{selectedYear}</strong></span>
+              </div>
+
+              <div className="flex items-center gap-2.5 ml-auto">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setHasExtracted(false);
+                    setExtractedRows([]);
+                    setErrorMsg(null);
+                  }}
+                  className="px-4 py-2 text-xs font-bold text-[#64748B] hover:bg-[#E2ECF4] hover:text-[#0B1F3A] rounded-xl transition-colors cursor-pointer"
+                  id="import-reupload-btn"
+                >
+                  Upload Different File
+                </button>
                 <button
                   type="button"
                   onClick={handleClose}
@@ -923,20 +1182,30 @@ export const ImportStudentsModal: React.FC = () => {
                 <button
                   type="button"
                   onClick={handleSaveToDatabase}
-                  disabled={selectedCount === 0}
-                  className={`px-5 py-2 text-xs font-bold rounded-xl flex items-center gap-2 shadow-md transition-all cursor-pointer active:scale-95 ${
-                    selectedCount === 0
+                  disabled={selectedCount === 0 || isSaving}
+                  className={`px-5 py-2.5 text-xs font-bold rounded-xl flex items-center gap-2 shadow-md transition-all cursor-pointer active:scale-95 ${
+                    selectedCount === 0 || isSaving
                       ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
                       : 'bg-[#0B1F3A] hover:bg-[#102A43] text-white shadow-[#0B1F3A]/20 border border-[#00D9FF]/30'
                   }`}
                   id="confirm-import-students-btn"
                 >
-                  <Check className="w-4 h-4 text-[#00D9FF]" />
-                  <span>Save Selected Students ({selectedCount})</span>
+                  {isSaving ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin text-[#00D9FF]" />
+                      <span>{saveProgressMessage || 'Saving to Database...'}</span>
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-4 h-4 text-[#00D9FF]" />
+                      <span>Import Students ({selectedCount})</span>
+                    </>
+                  )}
                 </button>
               </div>
-            </>
+            </div>
           ) : (
+            /* Upload Screen Footer */
             <div className="ml-auto">
               <button
                 type="button"

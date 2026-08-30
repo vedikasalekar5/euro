@@ -153,8 +153,8 @@ export const AskEuroAi: React.FC<AskEuroAiProps> = ({
         }),
       });
 
-      const json = await res.json();
-      const aiText = json.answer || 'I could not retrieve an answer for this query.';
+      const json = res.ok ? await res.json().catch(() => null) : null;
+      const aiText = json?.answer || 'I could not retrieve an answer for this query. Please check your query or try again.';
 
       const aiMsg: ChatMessage = {
         id: `ai_${Date.now()}`,

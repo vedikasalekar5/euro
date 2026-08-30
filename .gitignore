@@ -6,3 +6,8 @@ coverage/
 *.log
 .env*
 !.env.example
+*.db
+*.sqlite
+*.sqlite3
+euro_unit_test.db
+

@@ -94,8 +94,8 @@ export const StudentProfileModal: React.FC = () => {
           })),
         }),
       });
-      const data = await res.json();
-      setAiAdvice(data.analysis || summary.generatedAnalysis);
+      const data = res.ok ? await res.json().catch(() => null) : null;
+      setAiAdvice(data?.analysis || summary.generatedAnalysis);
     } catch (e) {
       setAiAdvice(summary.generatedAnalysis);
     } finally {

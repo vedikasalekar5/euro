@@ -13,15 +13,74 @@ import {
   checkEnrollmentAmbiguity,
   ExtractedStudentResult,
 } from './src/server/documentParser.js';
+import { getDb } from './src/server/database/db.js';
+import { runDatabaseMigration } from './src/server/database/migration.js';
+import { apiRouter } from './src/server/routes/api.js';
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Helper for resilient Gemini API calls with exponential backoff and seamless model fallback
+async function generateContentWithFallback(ai: GoogleGenAI, params: any, options: { maxRetries?: number } = {}) {
+  // Try default gemini-3.7-flash first, then fallback to gemini-flash-latest and gemini-3.1-flash-lite if 503/high demand occurs
+  const modelsToTry = ['gemini-3.7-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
+  const maxRetries = options.maxRetries ?? 2;
+  let lastError: any = null;
+
+  for (const model of modelsToTry) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const response = await ai.models.generateContent({
+          ...params,
+          model,
+        });
+        return response;
+      } catch (err: any) {
+        lastError = err;
+        const errStr = String(err?.message || err || '');
+        const isUnavailableOrRateLimited =
+          errStr.includes('503') ||
+          errStr.includes('UNAVAILABLE') ||
+          errStr.includes('429') ||
+          errStr.includes('RESOURCE_EXHAUSTED') ||
+          errStr.includes('high demand') ||
+          errStr.includes('try again later');
+
+        if (isUnavailableOrRateLimited && attempt < maxRetries) {
+          const delayMs = (attempt + 1) * 800;
+          console.log(`[Gemini API] Model ${model} is experiencing high demand (503/429). Retrying in ${delayMs}ms (attempt ${attempt + 1}/${maxRetries})...`);
+          await new Promise((r) => setTimeout(r, delayMs));
+          continue;
+        }
+
+        if (isUnavailableOrRateLimited) {
+          console.warn(`[Gemini API] Model ${model} unavailable after retries, switching to fallback model...`);
+          break; // Move to next model in modelsToTry
+        }
+
+        // For non-503 fatal errors (e.g. bad schema/args), throw directly
+        throw err;
+      }
+    }
+  }
+
+  throw lastError;
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
+
+  // Initialize SQLite database and run migration/seeding if needed
+  try {
+    await getDb();
+    await runDatabaseMigration();
+    console.log('EURO Unit Test SQLite Database ("euro_unit_test.db") initialized and ready.');
+  } catch (dbErr) {
+    console.error('Database initialization warning:', dbErr);
+  }
 
   // Allow larger payload for document/image base64 uploads
   app.use(express.json({ limit: '50mb' }));
@@ -29,8 +88,11 @@ async function startServer() {
 
   // Health check
   app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+    res.json({ status: 'ok', timestamp: new Date().toISOString(), db: 'euro_unit_test.db' });
   });
+
+  // Mount SQLite Database REST API routes
+  app.use('/api', apiRouter);
 
   // Server-side Gemini AI Academic Advisor endpoint
   app.post('/api/ai/analyze-student', async (req, res) => {
@@ -69,8 +131,7 @@ ${JSON.stringify(subjects, null, 2)}
 
 Provide specific recommendations: highlight their strongest subject, pinpoint subjects requiring revision/remedial lab sessions, and provide guidance for the upcoming final semester examinations.`;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.7-flash',
+      const response = await generateContentWithFallback(ai, {
         contents: prompt,
       });
 
@@ -118,6 +179,10 @@ Provide specific recommendations: highlight their strongest subject, pinpoint su
         rawBase64 = parts[1];
       }
 
+      if (detectedMime === 'image/jpg') {
+        detectedMime = 'image/jpeg';
+      }
+
       if (apiKey) {
         try {
           const ai = new GoogleGenAI({
@@ -150,8 +215,7 @@ Maximum Marks: ${maxMarks}
 Programming: "${selectedProg}"
 Academic Year: "${selectedYear}"`;
 
-          const response = await ai.models.generateContent({
-            model: 'gemini-3.7-flash',
+          const response = await generateContentWithFallback(ai, {
             contents: {
               parts: [
                 {
@@ -356,8 +420,7 @@ ${JSON.stringify(contextData, null, 2)}
 
 Provide a direct, thorough, and well-structured response:`;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.7-flash',
+      const response = await generateContentWithFallback(ai, {
         contents: prompt,
         config: {
           systemInstruction,
@@ -405,6 +468,10 @@ Provide a direct, thorough, and well-structured response:`;
         rawBase64 = parts[1];
       }
 
+      if (detectedMime === 'image/jpg') {
+        detectedMime = 'image/jpeg';
+      }
+
       const fileBuffer = Buffer.from(rawBase64, 'base64');
       const isPdf = detectedMime.includes('pdf') || (fileName && fileName.toLowerCase().endsWith('.pdf'));
 
@@ -436,25 +503,23 @@ Provide a direct, thorough, and well-structured response:`;
 Your task is to parse the uploaded document (scanned image, digital PDF, screenshot, roster table) and extract EVERY individual student record VISIBLY PRESENT in the file.
 
 STRICT ACCURACY RULES:
-1. NEVER invent, hallucinate, or generate sample students. Extract ONLY the students that are literally visible or printed in the file.
-2. DO NOT omit any student rows. If there are 10, 25, 50, or 100 students across 1 or more pages, extract all of them.
-3. "student_name": Extract the full name of the student exactly as written in Title Case (e.g. "Vedika Satish Salekar", "Rohan Deshmukh"). Remove serial numbers, prefixes like "Mr./Ms./Miss", but preserve full first/middle/last names.
-4. "enrollment_number": Extract the exact enrollment number / PRN / Roll Number (e.g. "24110980111", "2104052"). Ensure standard uppercase characters.
-5. "department": Identify department from table columns or document header. Must normalize to one of: "Computer Engineering", "Civil Engineering", "Mechanical Engineering", "Electrical Engineering". If not present, return empty string "".
-6. "year": Identify academic year from table or header. Must normalize to one of: "1st Year", "2nd Year", "3rd Year", "2nd Year DSY". If not present, return empty string "".
-7. "uncertain_fields": List any field names with potential OCR ambiguity (e.g. ["enrollment_number"] if letter O vs digit 0, 1 vs I, 5 vs S, 8 vs B).
-8. "uncertainty_reason": Description of why a field needs teacher review (or empty string).
-9. "raw_extracted_text": Return the verbatim text transcription read from the document.
-10. STRICTLY DO NOT extract BT numbers or Batch numbers.`;
+1. Extract ONLY TWO fields per student:
+   - "student_name": Full name of the student in Title Case (e.g. "Vedika Salekar", "Rahul Patil"). Remove serial numbers (1, 2, 3) or titles (Mr./Ms./Miss), but preserve the full name.
+   - "enrollment_number": Exact Enrollment Number / PRN (e.g. "24110980114", "24110980115"). Ensure standard uppercase characters.
+2. DO NOT extract Roll Numbers, Departments, Programs, Academic Years, Divisions, Genders, Emails, or Phone Numbers.
+3. NEVER invent, hallucinate, or generate sample students. Extract ONLY the students that are literally visible in the file.
+4. DO NOT omit any student rows. Extract all students visible across all pages.
+5. "uncertain_fields": List ["enrollment_number"] if there is OCR ambiguity (e.g. 0 vs O, 1 vs I).
+6. "uncertainty_reason": Brief explanation if any field is uncertain.
+7. "raw_extracted_text": Return the verbatim text transcription read from the document.`;
 
-          const prompt = `Extract all student records from this uploaded document.
+          const prompt = `Extract all student records from this uploaded document. Extract ONLY Student Name and Enrollment Number / PRN for each student.
 Document Name: "${fileName || 'uploaded_roster'}"
 MIME Type: "${detectedMime}"
 
 Return JSON matching the schema with the exact list of extracted students.`;
 
-          const response = await ai.models.generateContent({
-            model: 'gemini-3.7-flash',
+          const response = await generateContentWithFallback(ai, {
             contents: {
               parts: [
                 {
@@ -481,19 +546,11 @@ Return JSON matching the schema with the exact list of extracted students.`;
                       properties: {
                         student_name: {
                           type: Type.STRING,
-                          description: 'Full name of the student',
+                          description: 'Full name of the student (e.g. Vedika Salekar)',
                         },
                         enrollment_number: {
                           type: Type.STRING,
-                          description: 'Unique enrollment number or PRN',
-                        },
-                        department: {
-                          type: Type.STRING,
-                          description: 'Department if present',
-                        },
-                        year: {
-                          type: Type.STRING,
-                          description: 'Academic Year if present',
+                          description: 'Unique enrollment number or PRN (e.g. 24110980114)',
                         },
                         uncertain_fields: {
                           type: Type.ARRAY,
@@ -542,7 +599,7 @@ Return JSON matching the schema with the exact list of extracted students.`;
         }
 
         if (rawExtractedText && rawExtractedText.trim().length > 0) {
-          extractedStudents = parseStudentsFromRawText(rawExtractedText, defaultDepartment, defaultYear);
+          extractedStudents = parseStudentsFromRawText(rawExtractedText);
         }
       }
 
@@ -550,8 +607,6 @@ Return JSON matching the schema with the exact list of extracted students.`;
       const normalizedStudents: ExtractedStudentResult[] = extractedStudents.map((s) => {
         const cleanEnrollment = String(s.enrollment_number || '').trim().toUpperCase();
         const cleanName = String(s.student_name || '').trim();
-        const dept = normalizeDepartment(s.department || '', defaultDepartment || 'Computer Engineering') || (defaultDepartment || 'Computer Engineering');
-        const yr = normalizeAcademicYear(s.year || '', defaultYear || '2nd Year') || (defaultYear || '2nd Year');
 
         const uncertainFields = Array.isArray(s.uncertain_fields) ? [...s.uncertain_fields] : [];
         let uncertaintyReason = s.uncertainty_reason || '';
@@ -568,8 +623,6 @@ Return JSON matching the schema with the exact list of extracted students.`;
         return {
           student_name: cleanName,
           enrollment_number: cleanEnrollment,
-          department: dept,
-          year: yr,
           uncertain_fields: uncertainFields,
           uncertainty_reason: uncertaintyReason,
         };
@@ -598,6 +651,27 @@ Return JSON matching the schema with the exact list of extracted students.`;
         message: 'Unable to extract student details from this file: ' + (err.message || 'Unknown error'),
       });
     }
+  });
+
+  // Explicit 404 handler for unmatched API routes to ensure JSON response instead of HTML SPA fallback
+  app.all('/api/*', (req, res) => {
+    res.status(404).json({
+      success: false,
+      error: `API route ${req.method} ${req.originalUrl} not found`,
+    });
+  });
+
+  // Global Express error handler ensuring JSON responses for API errors
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error('Express Global API Error:', err);
+    if (res.headersSent) {
+      return next(err);
+    }
+    const statusCode = err.status || err.statusCode || 500;
+    res.status(statusCode).json({
+      success: false,
+      error: err.message || 'Internal server error',
+    });
   });
 
   // Vite integration

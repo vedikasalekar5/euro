@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useAcademic } from '../../context/AcademicContext';
 import {
   UserPlus,
@@ -14,49 +14,107 @@ import {
   CheckCircle2,
   FileSpreadsheet,
   Upload,
+  Eye,
 } from 'lucide-react';
 import { Department, AcademicYear, Student } from '../../types';
+import { getStudentName, getEnrollmentNumber } from '../../utils/studentSorting';
+import { StudentDeleteWorkflowModal } from '../Common/StudentDeleteWorkflowModal';
 
 export const StudentManagement: React.FC = () => {
   const {
     students,
     deleteStudent,
+    deleteStudentsBatch,
+    deleteAllStudents,
     setStudentFormModal,
     setImportStudentsModal,
+    setSelectedStudentProfile,
     showToast,
   } = useAcademic();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedDept, setSelectedDept] = useState<string>('All');
   const [selectedYear, setSelectedYear] = useState<string>('All');
-  const [studentToDelete, setStudentToDelete] = useState<Student | null>(null);
+  
+  // Unified Delete Options Workflow Modal State
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState<boolean>(false);
+  const [targetStudentForDelete, setTargetStudentForDelete] = useState<Student | null>(null);
 
-  // Filtered Students List
-  const filteredStudents = students.filter((student) => {
-    const q = searchQuery.toLowerCase().trim();
-    const studentName = (student.student_name || student.name || '').toLowerCase();
-    const enrollment = (
-      student.enrollment_number ||
-      student.enrollmentNo ||
-      student.rollNumber ||
-      student.prn ||
-      ''
-    ).toLowerCase();
+  // Filtered Students List for the normal clean table
+  const filteredStudents = useMemo(() => {
+    return students.filter((student) => {
+      const q = searchQuery.toLowerCase().trim();
+      const studentName = getStudentName(student).toLowerCase();
+      const enrollment = getEnrollmentNumber(student).toLowerCase();
+      const roll = (student.roll_number || student.rollNumber || '').toLowerCase();
 
-    const matchesSearch = !q || studentName.includes(q) || enrollment.includes(q);
-    const matchesDept = selectedDept === 'All' || student.department === selectedDept;
-    const matchesYear = selectedYear === 'All' || student.year === selectedYear;
+      const matchesSearch = !q || studentName.includes(q) || enrollment.includes(q) || roll.includes(q);
+      const matchesDept = selectedDept === 'All' || student.department === selectedDept;
+      const matchesYear = selectedYear === 'All' || student.year === selectedYear;
 
-    return matchesSearch && matchesDept && matchesYear;
-  });
+      return matchesSearch && matchesDept && matchesYear;
+    });
+  }, [students, searchQuery, selectedDept, selectedYear]);
 
-  const handleDeleteConfirm = () => {
-    if (!studentToDelete) return;
-    const res = deleteStudent(studentToDelete.id);
-    if (!res.success) {
-      showToast(res.message, 'error');
+  // Open Unified Delete Workflow from Row Action
+  const handleOpenRowDelete = (student: Student) => {
+    setTargetStudentForDelete(student);
+    setIsDeleteModalOpen(true);
+  };
+
+  // Single Student Delete Handler
+  const handleDeleteSingle = async (studentId: string) => {
+    try {
+      const res = deleteStudent(studentId);
+      if (res && res.success === false) {
+        showToast(res.message || 'Failed to delete student', 'error');
+        return false;
+      }
+      showToast('Student record deleted successfully.', 'success');
+      return true;
+    } catch (err: any) {
+      showToast(err.message || 'Error deleting student', 'error');
+      return false;
     }
-    setStudentToDelete(null);
+  };
+
+  // Multiple Students Batch Delete Handler
+  const handleDeleteBatch = async (selectedIds: string[]) => {
+    if (selectedIds.length === 0) return false;
+    try {
+      const res = await deleteStudentsBatch(selectedIds);
+      if (res.success) {
+        showToast(
+          selectedIds.length === 1
+            ? '1 student deleted successfully.'
+            : `${selectedIds.length} students deleted successfully.`,
+          'success'
+        );
+        return true;
+      } else {
+        showToast(res.message || 'Failed to delete selected students', 'error');
+        return false;
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Error occurred while deleting students', 'error');
+      return false;
+    }
+  };
+
+  // Delete All Students Handler
+  const handleDeleteAll = async () => {
+    try {
+      const res = await deleteAllStudents();
+      if (res.success) {
+        return true;
+      } else {
+        showToast(res.message || 'Failed to delete all students', 'error');
+        return false;
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Error deleting all students', 'error');
+      return false;
+    }
   };
 
   return (
@@ -79,7 +137,7 @@ export const StudentManagement: React.FC = () => {
           </div>
         </div>
 
-        {/* Action Buttons: Add Student & Import from Image/PDF */}
+        {/* Action Buttons */}
         <div className="flex flex-wrap items-center gap-2.5">
           <button
             onClick={() => setImportStudentsModal({ isOpen: true })}
@@ -149,7 +207,7 @@ export const StudentManagement: React.FC = () => {
         </div>
       </div>
 
-      {/* Students Management Table */}
+      {/* Clean Students Management Table (No default checkboxes) */}
       <div className="bg-white rounded-2xl border border-[#D7E3EA] shadow-xs overflow-hidden">
         <div className="px-6 py-4 border-b border-[#D7E3EA] flex items-center justify-between bg-[#F5F9FC]">
           <h3 className="text-sm font-bold text-[#172B4D]">
@@ -164,23 +222,20 @@ export const StudentManagement: React.FC = () => {
           <table className="w-full text-left text-xs divide-y divide-[#D7E3EA]">
             <thead className="bg-[#F5F9FC] font-bold text-[#0B1F3A] text-[11px] uppercase tracking-wider">
               <tr>
-                <th className="px-6 py-3.5">Student Name</th>
-                <th className="px-6 py-3.5">Enrollment No.</th>
-                <th className="px-6 py-3.5">Department</th>
-                <th className="px-6 py-3.5">Year</th>
-                <th className="px-6 py-3.5 text-right">Actions</th>
+                <th className="px-5 py-3.5">Student Name</th>
+                <th className="px-5 py-3.5">Roll No.</th>
+                <th className="px-5 py-3.5">Enrollment No.</th>
+                <th className="px-5 py-3.5">Department</th>
+                <th className="px-5 py-3.5">Year</th>
+                <th className="px-5 py-3.5 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[#D7E3EA] bg-white">
               {filteredStudents.length > 0 ? (
                 filteredStudents.map((student) => {
-                  const studentName = student.student_name || student.name || 'Student';
-                  const enrollment =
-                    student.enrollment_number ||
-                    student.enrollmentNo ||
-                    student.rollNumber ||
-                    student.prn ||
-                    'N/A';
+                  const studentName = getStudentName(student);
+                  const enrollment = getEnrollmentNumber(student);
+                  const rollNo = student.roll_number || student.rollNumber || '—';
 
                   return (
                     <tr
@@ -189,41 +244,62 @@ export const StudentManagement: React.FC = () => {
                       id={`student-row-${student.id}`}
                     >
                       {/* Student Name */}
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 rounded-xl bg-[#0B1F3A] text-[#00D9FF] font-black flex items-center justify-center text-xs shrink-0">
+                      <td className="px-5 py-4">
+                        <div
+                          className="flex items-center gap-3 cursor-pointer group"
+                          onClick={() => setSelectedStudentProfile(student)}
+                          title="Click to view full student performance profile"
+                        >
+                          <div className="w-8 h-8 rounded-xl bg-[#0B1F3A] group-hover:bg-[#102A43] text-[#00D9FF] font-black flex items-center justify-center text-xs shrink-0 transition-colors">
                             {studentName.charAt(0)}
                           </div>
                           <div>
-                            <span className="font-bold text-[#172B4D] text-sm block">
+                            <span className="font-bold text-[#172B4D] group-hover:text-[#0094B3] text-sm block transition-colors">
                               {studentName}
                             </span>
                           </div>
                         </div>
                       </td>
 
+                      {/* Roll No. */}
+                      <td className="px-5 py-4">
+                        <span className="font-mono font-bold text-[#64748B] bg-[#F5F9FC] px-2 py-1 rounded border border-[#D7E3EA]">
+                          {rollNo}
+                        </span>
+                      </td>
+
                       {/* Enrollment No. */}
-                      <td className="px-6 py-4">
+                      <td className="px-5 py-4">
                         <span className="font-mono font-bold text-[#0B1F3A] bg-[#F5F9FC] px-2.5 py-1 rounded-md border border-[#D7E3EA]">
                           {enrollment}
                         </span>
                       </td>
 
                       {/* Department */}
-                      <td className="px-6 py-4 font-medium text-[#172B4D]">
+                      <td className="px-5 py-4 font-medium text-[#172B4D]">
                         {student.department}
                       </td>
 
                       {/* Year */}
-                      <td className="px-6 py-4">
+                      <td className="px-5 py-4">
                         <span className="inline-block px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-[#0B1F3A]/5 text-[#0B1F3A] border border-[#D7E3EA]">
                           {student.year}
                         </span>
                       </td>
 
                       {/* Actions */}
-                      <td className="px-6 py-4 text-right">
-                        <div className="flex items-center justify-end gap-2">
+                      <td className="px-5 py-4 text-right">
+                        <div className="flex items-center justify-end gap-1.5">
+                          {/* View Profile */}
+                          <button
+                            onClick={() => setSelectedStudentProfile(student)}
+                            className="p-2 text-[#64748B] hover:text-[#0094B3] hover:bg-[#F5F9FC] rounded-xl transition-colors cursor-pointer"
+                            title="View Student Profile"
+                            id={`view-profile-btn-${student.id}`}
+                          >
+                            <Eye className="w-4 h-4" />
+                          </button>
+
                           {/* Edit */}
                           <button
                             onClick={() =>
@@ -236,9 +312,9 @@ export const StudentManagement: React.FC = () => {
                             <Edit2 className="w-4 h-4" />
                           </button>
 
-                          {/* Delete */}
+                          {/* Delete Action Button */}
                           <button
-                            onClick={() => setStudentToDelete(student)}
+                            onClick={() => handleOpenRowDelete(student)}
                             className="p-2 text-[#64748B] hover:text-[#EF4444] hover:bg-rose-50 rounded-xl transition-colors cursor-pointer"
                             title="Delete Student"
                             id={`delete-student-btn-${student.id}`}
@@ -252,7 +328,7 @@ export const StudentManagement: React.FC = () => {
                 })
               ) : (
                 <tr>
-                  <td colSpan={5} className="px-6 py-12 text-center text-[#64748B]">
+                  <td colSpan={6} className="px-6 py-12 text-center text-[#64748B]">
                     <Users className="w-10 h-10 mx-auto mb-2 text-[#64748B]" />
                     <p className="font-semibold text-sm text-[#172B4D]">No students found matching your criteria</p>
                     <p className="text-xs text-[#64748B] mt-1 mb-4">
@@ -284,53 +360,23 @@ export const StudentManagement: React.FC = () => {
         </div>
       </div>
 
-      {/* Delete Confirmation Modal */}
-      {studentToDelete && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#071426]/70 backdrop-blur-xs animate-in fade-in duration-150"
-          id="delete-student-confirmation-dialog"
-        >
-          <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl border border-[#D7E3EA] space-y-4">
-            <div className="w-12 h-12 rounded-xl bg-rose-50 text-[#EF4444] flex items-center justify-center mx-auto">
-              <AlertCircle className="w-6 h-6" />
-            </div>
-
-            <div className="text-center">
-              <h3 className="font-bold text-base text-[#172B4D]">Delete Student?</h3>
-              <p className="text-xs text-[#64748B] mt-1">
-                Are you sure you want to remove{' '}
-                <span className="font-bold text-[#172B4D]">
-                  {studentToDelete.student_name || studentToDelete.name}
-                </span>{' '}
-                (
-                {studentToDelete.enrollment_number ||
-                  studentToDelete.enrollmentNo ||
-                  studentToDelete.rollNumber ||
-                  studentToDelete.prn}
-                )? This will also remove their associated mark records.
-              </p>
-            </div>
-
-            <div className="flex items-center gap-3 pt-2">
-              <button
-                type="button"
-                onClick={() => setStudentToDelete(null)}
-                className="flex-1 py-2.5 text-xs font-semibold text-[#64748B] hover:bg-[#F5F9FC] rounded-xl transition-colors cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleDeleteConfirm}
-                className="flex-1 py-2.5 text-xs font-bold text-white bg-[#EF4444] hover:bg-rose-600 active:scale-95 rounded-xl shadow-md transition-colors cursor-pointer"
-                id="confirm-delete-student-btn"
-              >
-                Yes, Delete
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Unified Student Deletion Workflow Modal */}
+      <StudentDeleteWorkflowModal
+        isOpen={isDeleteModalOpen}
+        onClose={() => {
+          setIsDeleteModalOpen(false);
+          setTargetStudentForDelete(null);
+        }}
+        targetStudent={targetStudentForDelete}
+        students={students}
+        currentDepartmentFilter={selectedDept}
+        currentYearFilter={selectedYear}
+        currentSearchQuery={searchQuery}
+        onDeleteSingle={handleDeleteSingle}
+        onDeleteMultiple={handleDeleteBatch}
+        onDeleteAll={handleDeleteAll}
+      />
     </div>
   );
 };
+

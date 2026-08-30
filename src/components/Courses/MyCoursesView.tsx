@@ -8,44 +8,98 @@ import {
   Trash2,
   Filter,
   FileEdit,
-  GraduationCap,
-  Layers,
-  AlertTriangle,
-  Sparkles,
   Search,
-  CheckCircle2,
-  ArrowRight,
 } from 'lucide-react';
 import { Subject, Department, AcademicYear } from '../../types';
+import { CourseDeleteWorkflowModal } from '../Common/CourseDeleteWorkflowModal';
 
 export const MyCoursesView: React.FC = () => {
-  const { subjects, students, marks, deleteCourse, setCourseFormModal, setActiveTab } = useAcademic();
+  const {
+    subjects,
+    students,
+    deleteCourse,
+    deleteCoursesBatch,
+    deleteAllCourses,
+    setCourseFormModal,
+    setActiveTab,
+    showToast,
+  } = useAcademic();
   const { currentTeacher } = useAuth();
 
   const [selectedYear, setSelectedYear] = useState<AcademicYear | 'All'>('All');
   const [selectedDept, setSelectedDept] = useState<Department | 'All'>('All');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
-  // Delete modal state
-  const [courseToDelete, setCourseToDelete] = useState<Subject | null>(null);
+  // Course Delete Modal state
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState<boolean>(false);
+  const [targetCourseForDelete, setTargetCourseForDelete] = useState<Subject | null>(null);
 
   const filteredCourses = useMemo(() => {
     return subjects.filter((course) => {
       const matchesYear = selectedYear === 'All' || course.year === selectedYear;
-      const matchesDept = selectedDept === 'All' || course.department === selectedDept || (course as any).programming_name === selectedDept;
+      const matchesDept =
+        selectedDept === 'All' ||
+        course.department === selectedDept ||
+        (course as any).programming_name === selectedDept;
       const title = (course.course_title || course.courseTitle || course.subject_name || '').toLowerCase();
       const code = (course.course_code || course.courseCode || course.subjectCode || '').toLowerCase();
-      const matchesSearch = !searchQuery || title.includes(searchQuery.toLowerCase()) || code.includes(searchQuery.toLowerCase());
+      const matchesSearch =
+        !searchQuery ||
+        title.includes(searchQuery.toLowerCase()) ||
+        code.includes(searchQuery.toLowerCase());
       return matchesYear && matchesDept && matchesSearch;
     });
   }, [subjects, selectedYear, selectedDept, searchQuery]);
 
   const yearTabs: Array<AcademicYear | 'All'> = ['All', '1st Year', '2nd Year', '3rd Year', '2nd Year DSY'];
 
-  const handleDeleteConfirm = () => {
-    if (courseToDelete) {
-      deleteCourse(courseToDelete.id);
-      setCourseToDelete(null);
+  const handleOpenRowDelete = (course: Subject) => {
+    setTargetCourseForDelete(course);
+    setIsDeleteModalOpen(true);
+  };
+
+  const handleDeleteSingle = async (courseId: string) => {
+    try {
+      const res = await deleteCourse(courseId);
+      if (res && res.success === false) {
+        showToast(res.message || 'Failed to delete course', 'error');
+        return false;
+      }
+      return true;
+    } catch (err: any) {
+      showToast(err.message || 'Error deleting course', 'error');
+      return false;
+    }
+  };
+
+  const handleDeleteBatch = async (courseIds: string[]) => {
+    if (courseIds.length === 0) return false;
+    try {
+      const res = await deleteCoursesBatch(courseIds);
+      if (res.success) {
+        return true;
+      } else {
+        showToast(res.message || 'Failed to delete selected courses', 'error');
+        return false;
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Error deleting courses', 'error');
+      return false;
+    }
+  };
+
+  const handleDeleteAll = async () => {
+    try {
+      const res = await deleteAllCourses();
+      if (res.success) {
+        return true;
+      } else {
+        showToast(res.message || 'Failed to delete all courses', 'error');
+        return false;
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Error deleting all courses', 'error');
+      return false;
     }
   };
 
@@ -76,21 +130,23 @@ export const MyCoursesView: React.FC = () => {
           </div>
         </div>
 
-        <button
-          onClick={() =>
-            setCourseFormModal({
-              isOpen: true,
-              courseToEdit: null,
-              defaultYear: selectedYear !== 'All' ? selectedYear : '2nd Year',
-              defaultDept: selectedDept !== 'All' ? selectedDept : currentTeacher?.department,
-            })
-          }
-          className="px-5 py-2.5 bg-[#0B1F3A] hover:bg-[#102A43] active:scale-95 text-white font-bold text-xs rounded-xl shadow-md shadow-[#0B1F3A]/20 transition-all flex items-center gap-2 cursor-pointer shrink-0 border border-[#00D9FF]/30"
-          id="add-course-main-btn"
-        >
-          <Plus className="w-4 h-4 text-[#00D9FF]" />
-          <span>Add Course</span>
-        </button>
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <button
+            onClick={() =>
+              setCourseFormModal({
+                isOpen: true,
+                courseToEdit: null,
+                defaultYear: selectedYear !== 'All' ? selectedYear : '2nd Year',
+                defaultDept: selectedDept !== 'All' ? selectedDept : currentTeacher?.department,
+              })
+            }
+            className="px-5 py-2.5 bg-[#0B1F3A] hover:bg-[#102A43] active:scale-95 text-white font-bold text-xs rounded-xl shadow-md shadow-[#0B1F3A]/20 transition-all flex items-center gap-2 cursor-pointer shrink-0 border border-[#00D9FF]/30"
+            id="add-course-main-btn"
+          >
+            <Plus className="w-4 h-4 text-[#00D9FF]" />
+            <span>Add Course</span>
+          </button>
+        </div>
       </div>
 
       {/* Year Filter Tabs & Controls */}
@@ -161,7 +217,7 @@ export const MyCoursesView: React.FC = () => {
         </div>
       </div>
 
-      {/* Courses Table / Cards */}
+      {/* Courses Table */}
       {filteredCourses.length === 0 ? (
         <div className="bg-white rounded-2xl border border-[#D7E3EA] p-12 text-center shadow-xs">
           <div className="w-16 h-16 rounded-2xl bg-[#F5F9FC] text-[#0B1F3A] border border-[#D7E3EA] mx-auto flex items-center justify-center mb-4">
@@ -216,7 +272,7 @@ export const MyCoursesView: React.FC = () => {
             <table className="w-full text-left border-collapse text-xs" id="my-courses-table">
               <thead>
                 <tr className="bg-[#F5F9FC] border-b border-[#D7E3EA] text-[#0B1F3A] font-bold uppercase tracking-wider text-[10px]">
-                  <th className="py-3.5 px-5">Sr.</th>
+                  <th className="py-3.5 px-4">Sr.</th>
                   <th className="py-3.5 px-5">Course Title</th>
                   <th className="py-3.5 px-5">Course Code</th>
                   <th className="py-3.5 px-5">Programming Name</th>
@@ -243,7 +299,7 @@ export const MyCoursesView: React.FC = () => {
                       className="hover:bg-[#F5F9FC] transition-colors group"
                       id={`course-row-${course.id}`}
                     >
-                      <td className="py-4 px-5 font-mono text-[#64748B] font-medium">
+                      <td className="py-4 px-4 font-mono text-[#64748B] font-medium">
                         {idx + 1}
                       </td>
 
@@ -313,8 +369,8 @@ export const MyCoursesView: React.FC = () => {
                           </button>
 
                           <button
-                            onClick={() => setCourseToDelete(course)}
-                            className="p-1.5 text-[#64748B] hover:text-[#EF4444] hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                            onClick={() => handleOpenRowDelete(course)}
+                            className="p-1.5 text-[#64748B] hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
                             title="Delete Course"
                             id={`delete-course-btn-${course.id}`}
                           >
@@ -331,72 +387,23 @@ export const MyCoursesView: React.FC = () => {
         </div>
       )}
 
-      {/* Delete Confirmation Modal */}
-      {courseToDelete && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#071426]/70 backdrop-blur-xs"
-          id="delete-course-modal"
-        >
-          <div className="bg-white rounded-2xl shadow-2xl border border-[#D7E3EA] max-w-md w-full p-6 space-y-4 animate-in fade-in zoom-in-95 duration-150">
-            <div className="w-12 h-12 rounded-2xl bg-rose-50 border border-rose-100 text-[#EF4444] flex items-center justify-center mx-auto">
-              <AlertTriangle className="w-6 h-6" />
-            </div>
-
-            <div className="text-center">
-              <h3 className="text-base font-bold text-[#172B4D]">
-                Are you sure you want to delete this course?
-              </h3>
-              <p className="text-xs text-[#64748B] mt-1">
-                This will delete the course entry from your teacher portal.
-              </p>
-            </div>
-
-            {/* Course Summary Box */}
-            <div className="bg-[#F5F9FC] p-3.5 rounded-2xl border border-[#D7E3EA] text-xs space-y-1.5">
-              <div className="flex justify-between">
-                <span className="text-[#64748B]">Course Title:</span>
-                <strong className="text-[#172B4D]">
-                  {courseToDelete.course_title || courseToDelete.subject_name}
-                </strong>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-[#64748B]">Course Code:</span>
-                <span className="font-mono font-bold text-[#0B1F3A]">
-                  {courseToDelete.course_code || courseToDelete.courseCode || courseToDelete.subjectCode}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-[#64748B]">Programming / Year:</span>
-                <span className="text-[#172B4D]">
-                  {courseToDelete.department} • {courseToDelete.year}
-                </span>
-              </div>
-            </div>
-
-            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-800">
-              Any marks entered for this course will be safely cleaned up without affecting other subjects or student records.
-            </div>
-
-            <div className="flex items-center justify-end gap-2.5 pt-2">
-              <button
-                onClick={() => setCourseToDelete(null)}
-                className="px-4 py-2 text-xs font-semibold text-[#64748B] hover:bg-[#F5F9FC] rounded-xl cursor-pointer transition-colors"
-                id="cancel-delete-course-btn"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleDeleteConfirm}
-                className="px-5 py-2 text-xs font-bold text-white bg-[#EF4444] hover:bg-rose-600 rounded-xl shadow-md shadow-rose-600/20 active:scale-95 cursor-pointer transition-all"
-                id="confirm-delete-course-btn"
-              >
-                Yes, Delete Course
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
+      {/* Course Deletion Workflow Modal */}
+      <CourseDeleteWorkflowModal
+        isOpen={isDeleteModalOpen}
+        onClose={() => {
+          setIsDeleteModalOpen(false);
+          setTargetCourseForDelete(null);
+        }}
+        targetCourse={targetCourseForDelete}
+        courses={subjects}
+        currentDepartmentFilter={selectedDept}
+        currentYearFilter={selectedYear}
+        currentSearchQuery={searchQuery}
+        onDeleteSingle={handleDeleteSingle}
+        onDeleteMultiple={handleDeleteBatch}
+        onDeleteAll={handleDeleteAll}
+      />
     </div>
   );
 };
+

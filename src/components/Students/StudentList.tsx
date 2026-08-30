@@ -21,19 +21,23 @@ import {
   RotateCcw,
   BookOpen,
 } from 'lucide-react';
-import { Department, AcademicYear, PerformanceRating, ImprovementTrend } from '../../types';
+import { Department, AcademicYear, PerformanceRating, ImprovementTrend, Student } from '../../types';
 import { getPerformanceBadgeClasses } from '../../utils/calculations';
 import { exportAllStudentsToExcel } from '../../utils/excelExport';
 import { compareEnrollmentNumbers, getEnrollmentNumber } from '../../utils/studentSorting';
+import { StudentDeleteWorkflowModal } from '../Common/StudentDeleteWorkflowModal';
 
 export const StudentList: React.FC = () => {
   const {
     students,
     allSummaries,
     deleteStudent,
+    deleteStudentsBatch,
+    deleteAllStudents,
     setSelectedStudentProfile,
     setSelectedStudentForMarks,
     setStudentFormModal,
+    showToast,
   } = useAcademic();
 
   const { isTeacher, isAdmin } = useAuth();
@@ -44,6 +48,10 @@ export const StudentList: React.FC = () => {
   const [yearFilter, setYearFilter] = useState<AcademicYear | 'All'>('All');
   const [ratingFilter, setRatingFilter] = useState<PerformanceRating | 'All'>('All');
   const [trendFilter, setTrendFilter] = useState<ImprovementTrend | 'All'>('All');
+
+  // Unified Delete Modal State
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState<boolean>(false);
+  const [targetStudentForDelete, setTargetStudentForDelete] = useState<Student | null>(null);
 
   // Sorting: Default to Enrollment Number ascending
   const [sortField, setSortField] = useState<
@@ -57,6 +65,67 @@ export const StudentList: React.FC = () => {
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
+
+  // Open Unified Delete Workflow from Row Action
+  const handleOpenRowDelete = (student: Student) => {
+    setTargetStudentForDelete(student);
+    setIsDeleteModalOpen(true);
+  };
+
+  // Single Student Delete Handler
+  const handleDeleteSingle = async (studentId: string) => {
+    try {
+      const res = deleteStudent(studentId);
+      if (res && res.success === false) {
+        showToast(res.message || 'Failed to delete student', 'error');
+        return false;
+      }
+      showToast('Student record deleted successfully.', 'success');
+      return true;
+    } catch (err: any) {
+      showToast(err.message || 'Error deleting student', 'error');
+      return false;
+    }
+  };
+
+  // Multiple Students Batch Delete Handler
+  const handleDeleteBatch = async (selectedIds: string[]) => {
+    if (selectedIds.length === 0) return false;
+    try {
+      const res = await deleteStudentsBatch(selectedIds);
+      if (res.success) {
+        showToast(
+          selectedIds.length === 1
+            ? '1 student deleted successfully.'
+            : `${selectedIds.length} students deleted successfully.`,
+          'success'
+        );
+        return true;
+      } else {
+        showToast(res.message || 'Failed to delete selected students', 'error');
+        return false;
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Error occurred while deleting students', 'error');
+      return false;
+    }
+  };
+
+  // Delete All Students Handler
+  const handleDeleteAll = async () => {
+    try {
+      const res = await deleteAllStudents();
+      if (res.success) {
+        return true;
+      } else {
+        showToast(res.message || 'Failed to delete all students', 'error');
+        return false;
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Error deleting all students', 'error');
+      return false;
+    }
+  };
 
   // Filter logic
   const filteredSummaries = useMemo(() => {
@@ -518,16 +587,9 @@ export const StudentList: React.FC = () => {
                             <SlidersHorizontal className="w-4 h-4" />
                           </button>
 
+                          {/* Delete Student Action */}
                           <button
-                            onClick={() => {
-                              if (
-                                confirm(
-                                  `Are you sure you want to delete student "${student.name}" and all their evaluation marks?`
-                                )
-                              ) {
-                                deleteStudent(student.id);
-                              }
-                            }}
+                            onClick={() => handleOpenRowDelete(student)}
                             className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
                             title="Delete Student"
                             id={`delete-student-btn-${student.id}`}
@@ -594,6 +656,22 @@ export const StudentList: React.FC = () => {
         )}
       </div>
 
+      {/* Unified Student Deletion Workflow Modal */}
+      <StudentDeleteWorkflowModal
+        isOpen={isDeleteModalOpen}
+        onClose={() => {
+          setIsDeleteModalOpen(false);
+          setTargetStudentForDelete(null);
+        }}
+        targetStudent={targetStudentForDelete}
+        students={students}
+        currentDepartmentFilter={deptFilter}
+        currentYearFilter={yearFilter}
+        currentSearchQuery={search}
+        onDeleteSingle={handleDeleteSingle}
+        onDeleteMultiple={handleDeleteBatch}
+        onDeleteAll={handleDeleteAll}
+      />
     </div>
   );
 };

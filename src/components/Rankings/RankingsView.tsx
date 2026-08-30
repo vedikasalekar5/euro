@@ -197,7 +197,8 @@ export const RankingsView: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-[#D7E3EA] bg-white">
-              {rankedSummaries.map((s, index) => {
+              {rankedSummaries.length > 0 ? (
+                rankedSummaries.map((s, index) => {
                 const rank = index + 1;
                 const badge = getPerformanceBadgeClasses(s.overallRating);
                 const isTop3 = rank <= 3;
@@ -276,7 +277,18 @@ export const RankingsView: React.FC = () => {
                     </td>
                   </tr>
                 );
-              })}
+              })
+            ) : (
+              <tr>
+                <td colSpan={9} className="px-6 py-12 text-center text-[#64748B]">
+                  <Trophy className="w-8 h-8 mx-auto mb-2 text-[#94A3B8]" />
+                  <p className="font-bold text-sm text-[#0B1F3A]">No Ranked Students Found</p>
+                  <p className="text-xs text-[#64748B] mt-1">
+                    No student performance records found for the selected department/year.
+                  </p>
+                </td>
+              </tr>
+            )}
             </tbody>
           </table>
         </div>

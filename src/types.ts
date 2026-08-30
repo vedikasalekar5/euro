@@ -59,6 +59,8 @@ export interface Teacher {
   avatarUrl?: string;
   position?: string; // e.g. 'HOD' | 'Professor' | 'Lecturer' | 'Assistant Professor' | 'Lab Assistant' | 'Clerk' | 'Instructor' | 'Other'
   positionOther?: string;
+  subject?: string;
+  course_code?: string;
   email?: string;
   mobile?: string;
   phone?: string;
